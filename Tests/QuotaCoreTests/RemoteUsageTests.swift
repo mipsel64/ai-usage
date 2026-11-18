@@ -129,15 +129,9 @@ struct RemoteUsageTests {
             ),
             QuotaWindow(
                 id: "kimi-monthly-total",
-                title: "Monthly total quota",
+                title: "Monthly quota",
                 remainingPercent: 25,
                 resetAt: Date(timeIntervalSince1970: 1_800_000_000)
-            ),
-            QuotaWindow(
-                id: "kimi-monthly-code",
-                title: "Monthly coding quota",
-                remainingPercent: 0,
-                resetAt: nil
             ),
         ])
     }

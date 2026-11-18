@@ -1,0 +1,6 @@
+{
+  "description": "Writes local Claude quota observations for AI Usage.",
+  "modules": [
+    "./register.js"
+  ]
+}

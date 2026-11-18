@@ -14,49 +14,79 @@ struct QuotaMenu: View {
     @ViewState private var redeemingProvider: ProviderID?
     @ViewState private var resetResults: [ProviderID: String] = [:]
     @ViewState private var resetErrors: [ProviderID: String] = [:]
+    @ViewState private var connectionErrors: [ProviderID: String] = [:]
+    @ViewState private var connectingProviders: Set<ProviderID> = []
 
     private let staleInterval: TimeInterval = 5 * 60
 
+    private var connectedCount: Int {
+        store.states.values.count(where: { $0.connected && !$0.needsAuthentication })
+    }
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.periodic(from: .now, by: 60)) { context in
             VStack(alignment: .leading, spacing: 0) {
-                Text("AI Usage")
-                    .font(.headline)
-                    .padding(.bottom, 10)
-
-                Divider()
-
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(store.providers) { provider in
-                            providerSection(for: provider, now: context.date)
+                Button(action: { showAccounts() }) {
+                    HStack(spacing: 12) {
+                        AIUsageAppIcon()
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("AI Usage")
+                                .font(.title3.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Label {
+                                Text("\(connectedCount) of \(store.providers.count) subscriptions connected")
+                                    .foregroundStyle(.secondary)
+                            } icon: {
+                                Circle()
+                                    .fill(connectedCount == 0 ? Color.secondary : Color.green)
+                                    .frame(width: 7, height: 7)
+                            }
+                            .font(.caption)
                         }
-                    }
-                    .padding(.vertical, 10)
-                }
-                .frame(maxHeight: 500)
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Reset pages open in your browser. Refresh after making a change to confirm the result.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    HStack {
-                        Button("Connections…", action: showConnections)
                         Spacer()
-                        Button("Quit AI Usage") {
-                            NSApplication.shared.terminate(nil)
-                        }
+                        Image(systemName: "chevron.right")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.tertiary)
                     }
-                    .padding(.top, 2)
+                    .padding(16)
+                    .contentShape(Rectangle())
                 }
-                .padding(.top, 10)
+                .buttonStyle(.plain)
+                .accessibilityLabel("AI Usage accounts")
+                .accessibilityHint("Opens account and notification settings.")
+
+                Divider()
+
+                providerList(now: context.date)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 2) {
+                    MenuActionRow(
+                        title: "Manage Accounts…",
+                        systemImage: "person.crop.circle",
+                        shortcut: "⌘,",
+                        action: { showAccounts() }
+                    )
+                    .keyboardShortcut(",", modifiers: .command)
+                    MenuActionRow(
+                        title: "Quit AI Usage",
+                        systemImage: "power",
+                        shortcut: "⌘Q"
+                    ) {
+                        NSApplication.shared.terminate(nil)
+                    }
+                    .keyboardShortcut("q", modifiers: .command)
+                }
+                .padding(8)
             }
-            .padding(12)
             .frame(width: 400)
+            .background(MenuPopoverBackdrop())
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+            }
         }
         .alert(
             "Redeem one banked reset?",
@@ -81,138 +111,206 @@ struct QuotaMenu: View {
     }
 
     @ViewBuilder
+    private func providerList(now: Date) -> some View {
+        VStack(spacing: 0) {
+            ForEach(store.providers) { provider in
+                providerSection(for: provider, now: now)
+                if provider.id != store.providers.last?.id {
+                    Divider().padding(.leading, 16)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
     private func providerSection(for provider: QuotaProvider, now: Date) -> some View {
         let state = store.states[provider.id]
+        let isMonitoring = state?.connected == true
 
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 Text(provider.displayName)
                     .font(.headline)
-
-                Text(state?.connected == true ? "Connected" : "Not connected")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
+                if isMonitoring {
+                    Image(systemName: state?.needsAuthentication == true ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(state?.needsAuthentication == true ? .orange : .green)
+                        .accessibilityLabel(state?.needsAuthentication == true ? "Sign-in required" : "Connected")
+                }
                 Spacer()
+                if isMonitoring && state?.needsAuthentication != true {
+                    Button {
+                        Task { await store.refresh(provider.id, interactive: true) }
+                    } label: {
+                        if state?.loading == true {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 24, height: 22)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.caption.weight(.semibold))
+                                .frame(width: 24, height: 22)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .disabled(state?.loading == true)
+                    .accessibilityLabel("Refresh \(provider.displayName)")
+                    .help("Refresh \(provider.displayName) quota")
+                } else {
+                    Button {
+                        connectFromMenu(provider)
+                    } label: {
+                        if connectingProviders.contains(provider.id) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(minWidth: 52)
+                        } else {
+                            Text(isMonitoring ? "Sign In" : "Connect")
+                        }
+                    }
+                    .usageActionStyle(prominent: true)
+                    .controlSize(.small)
+                    .disabled(connectingProviders.contains(provider.id))
+                    .accessibilityLabel(isMonitoring ? "Sign in to \(provider.displayName)" : "Connect \(provider.displayName)")
+                }
+            }
 
-                Button {
-                    Task { await store.refresh(provider.id) }
-                } label: {
-                    if state?.loading == true {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(minWidth: 24, minHeight: 24)
+            if isMonitoring {
+                if let message = state?.message, !message.isEmpty {
+                    Label(message, systemImage: state?.needsAuthentication == true ? "exclamationmark.triangle.fill" : "info.circle")
+                        .font(.caption2)
+                        .foregroundStyle(state?.needsAuthentication == true ? .orange : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let snapshot = state?.snapshot {
+                    let windows = snapshot.windows.filter { provider.id != .kimi || $0.id != "kimi-monthly-code" }
+                    if windows.isEmpty {
+                        Text("No quota windows reported. Refresh to try again.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     } else {
-                        Image(systemName: "arrow.clockwise")
-                            .frame(minWidth: 24, minHeight: 24)
-                    }
-                }
-                .buttonStyle(.borderless)
-                .disabled(state?.connected != true || state?.loading == true)
-                .accessibilityLabel("Refresh \(provider.displayName)")
-                .help("Refresh \(provider.displayName) quota")
-            }
-
-            if let message = state?.message, !message.isEmpty {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let snapshot = state?.snapshot {
-                if snapshot.windows.isEmpty {
-                    Text("No quota windows were reported. Refresh to try again.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(snapshot.windows, id: \.id) { window in
-                        QuotaWindowRow(window: window, now: now)
+                        VStack(spacing: 7) {
+                            ForEach(windows, id: \.id) { window in
+                                QuotaWindowRow(window: window, now: now)
+                            }
+                        }
                     }
                 }
 
-                let isStale = now.timeIntervalSince(snapshot.observedAt) >= staleInterval
-                Text("Last observed \(snapshot.observedAt.formatted(date: .abbreviated, time: .shortened))\(isStale ? " · stale" : "")")
-                    .font(.caption2)
-                    .foregroundStyle(isStale ? .orange : .secondary)
-                    .help(isStale ? "This data is more than five minutes old. Refresh to update it." : "When this quota data was last observed.")
-            } else if state?.loading == true {
-                Label("Refreshing quota…", systemImage: "arrow.clockwise")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if state?.connected == true {
-                Text("No quota data yet. Refresh to try again.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Not connected. Open Connections to set up this provider.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if provider.supportsBankedReset, state?.connected == true {
-                if let credits = state?.snapshot?.resetCredits {
-                    Text("Banked resets available: \(credits.availableCount)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Banked reset count not reported")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if provider.supportsBankedReset {
+                    HStack(spacing: 8) {
+                        if let credits = state?.snapshot?.resetCredits {
+                            Text("\(credits.availableCount) banked reset\(credits.availableCount == 1 ? "" : "s")")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        let canRedeem = store.redeemableCredit(provider.id, at: now) != nil && redeemingProvider == nil
+                        Button {
+                            presentResetConfirmation(for: provider)
+                        } label: {
+                            if redeemingProvider == provider.id {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text("Redeem reset…")
+                            }
+                        }
+                        .usageActionStyle()
+                        .controlSize(.small)
+                        .disabled(!canRedeem)
+                        .help("Review and redeem one eligible banked reset.")
+                    }
                 }
 
                 if let result = resetResults[provider.id], !result.isEmpty {
                     Text(result)
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-
                 if let error = resetErrors[provider.id], !error.isEmpty {
-                    Text(error)
-                        .font(.caption)
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
-            HStack(spacing: 12) {
-                if provider.supportsBankedReset, state?.connected == true {
-                    let canRedeem = store.redeemableCredit(provider.id, at: now) != nil && redeemingProvider == nil
-
-                    Button("Redeem banked reset…") {
-                        presentResetConfirmation(for: provider)
-                    }
-                    .disabled(!canRedeem)
-                    .help(canRedeem ? "Review and redeem a banked reset." : "Refresh quota to check for an eligible banked reset.")
-
-                    if redeemingProvider == provider.id {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                }
-
-                if let resetURL = provider.resetURL {
-                    Link(provider.supportsBankedReset ? "Open usage portal" : "Open reset page", destination: resetURL)
-                } else {
-                    Button("Manual reset unavailable") {}
-                        .disabled(true)
-                }
-
-                Spacer()
-
-                Link(provider.supportsBankedReset ? "Inspect account" : "Account", destination: provider.accountURL)
+            if let error = connectionErrors[provider.id] {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .controlSize(.small)
+
+            HStack(spacing: 6) {
+                if let snapshot = state?.snapshot {
+                    let isStale = now.timeIntervalSince(snapshot.observedAt) >= staleInterval
+                    Label {
+                        Text("Updated \(snapshot.observedAt.formatted(date: .omitted, time: .shortened))\(isStale ? " · Stale" : "")")
+                    } icon: {
+                        Image(systemName: isStale ? "exclamationmark.circle" : "clock")
+                    }
+                    .foregroundStyle(isStale ? .orange : .secondary)
+                } else if isMonitoring {
+                    Text(state?.loading == true ? "Reading quota…" : "Waiting for quota")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Subscription not connected")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                usagePortalLink(for: provider)
+            }
+            .font(.caption2)
         }
-        .padding(10)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
-    private func showConnections() {
+    private func usagePortalLink(for provider: QuotaProvider) -> some View {
+        Link(destination: provider.resetURL ?? provider.accountURL) {
+            Image(systemName: "arrow.up.right")
+                .font(.caption.weight(.semibold))
+                .frame(width: 24, height: 18)
+        }
+        .accessibilityLabel("Open \(provider.displayName) usage portal")
+        .accessibilityHint("Opens the official \(provider.displayName) website in your browser.")
+    }
+
+
+    private func connectFromMenu(_ provider: QuotaProvider) {
+        switch provider.connection {
+        case .oauth, .browserLogin:
+            break
+        default:
+            showAccounts(provider)
+            return
+        }
+        guard !connectingProviders.contains(provider.id) else { return }
+
+        connectingProviders.insert(provider.id)
+        connectionErrors[provider.id] = nil
+        Task {
+            defer { connectingProviders.remove(provider.id) }
+            do {
+                try await store.connect(provider.id)
+            } catch {
+                connectionErrors[provider.id] = connectionMessage(for: error)
+            }
+        }
+    }
+
+    private func showAccounts(_ provider: QuotaProvider? = nil) {
         NSApplication.shared.activate(ignoringOtherApps: true)
         openSettings()
+        guard let provider else { return }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .showProviderAccount, object: provider.id)
+        }
     }
 
     private func presentResetConfirmation(for provider: QuotaProvider) {
@@ -262,6 +360,23 @@ struct QuotaMenu: View {
     }
 }
 
+private func supportsDesktopFeed(_ provider: QuotaProvider) -> Bool {
+    guard case let .statusLine(_, _, desktopPlugin) = provider.connection else { return false }
+    return desktopPlugin
+}
+
+@MainActor
+private func connectionStatus(for provider: QuotaProvider, state: ProviderState?, store: UsageStore) -> String {
+    if state?.needsAuthentication == true { return "Access denied" }
+    guard supportsDesktopFeed(provider) else {
+        guard state?.connected == true else { return "Monitoring off" }
+        return state?.snapshot == nil ? "Waiting for quota" : "Monitoring on"
+    }
+    guard state?.connected == true else { return "Monitoring off" }
+    let source = store.usesDesktopFeed(provider.id) ? "Desktop feed" : "Status-line feed"
+    return state?.snapshot == nil ? "\(source) · waiting for quota" : "\(source) · monitoring on"
+}
+
 private struct PendingReset {
     let provider: QuotaProvider
     let creditID: String
@@ -275,39 +390,29 @@ private struct QuotaWindowRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(window.title)
-                    .font(.subheadline)
-                    .lineLimit(2)
-                Spacer()
-                Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0...1))))% remaining")
-                    .font(.subheadline)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                if let resetAt = window.resetAt {
+                    Text(resetCountdown(from: now, to: resetAt))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0...1))))%")
+                    .font(.system(.callout, design: .rounded).weight(.semibold))
                     .monospacedDigit()
             }
 
             ProgressView(value: window.remainingPercent, total: 100)
+                .progressViewStyle(.linear)
+                .controlSize(.small)
+                .tint(UsageVisuals.quotaColor(remaining: window.remainingPercent))
                 .accessibilityLabel("\(window.title) remaining quota")
-
-            if let resetAt = window.resetAt {
-                if hasUsableResetInterval(resetAt.timeIntervalSince(now)) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(resetCountdown(from: now, to: resetAt))
-                            .monospacedDigit()
-                        Spacer()
-                        Text(resetAt.formatted(date: .abbreviated, time: .shortened))
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(.caption)
-                } else {
-                    Text("Reset time not available")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Text("Reset time not reported")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+                .accessibilityValue("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0...1)))) percent")
         }
     }
 
@@ -317,90 +422,186 @@ private struct QuotaWindowRow: View {
 
     private func resetCountdown(from now: Date, to resetAt: Date) -> String {
         let interval = resetAt.timeIntervalSince(now)
-        guard hasUsableResetInterval(interval) else { return "Reset time not available" }
-        guard interval > 0 else { return "Reset due — refresh" }
-
-        var seconds = Int(ceil(interval))
-        let days = seconds / 86_400
-        seconds %= 86_400
-        let hours = seconds / 3_600
-        seconds %= 3_600
-        let minutes = seconds / 60
-        seconds %= 60
-
-        if days > 0 {
-            return "Resets in \(days)d \(hours)h \(minutes)m \(seconds)s"
-        }
-        if hours > 0 {
-            return "Resets in \(hours)h \(minutes)m \(seconds)s"
-        }
-        if minutes > 0 {
-            return "Resets in \(minutes)m \(seconds)s"
-        }
-        return "Resets in \(seconds)s"
+        guard hasUsableResetInterval(interval) else { return "Reset unavailable" }
+        guard interval > 0 else { return "Reset due" }
+        let totalMinutes = max(1, Int(ceil(interval / 60)))
+        let days = totalMinutes / 1_440
+        let hours = (totalMinutes % 1_440) / 60
+        let minutes = totalMinutes % 60
+        if days > 0 { return "Resets in \(days)d \(hours)h \(minutes)m" }
+        if hours > 0 { return "Resets in \(hours)h \(minutes)m" }
+        return "Resets in \(minutes)m"
     }
+}
+
+private extension Notification.Name {
+    static let showProviderAccount = Notification.Name("AIUsage.ShowProviderAccount")
+}
+
+private enum AccountSelection: Hashable {
+    case provider(ProviderID)
+    case notifications
 }
 
 @MainActor
 struct ConnectionView: View {
     let store: UsageStore
 
+    @ViewState private var selection: AccountSelection?
+    @ViewState private var searchText = ""
     @ViewState private var secrets: [ProviderID: String] = [:]
     @ViewState private var executables: [ProviderID: URL] = [:]
     @ViewState private var errors: [ProviderID: String] = [:]
     @ViewState private var busyProviders: Set<ProviderID> = []
+    @ViewState private var desktopFeedSelections: [ProviderID: Bool] = [:]
     @ViewState private var copiedStatusLineCommand = false
 
+    private var visibleProviders: [QuotaProvider] {
+        guard !searchText.isEmpty else { return store.providers }
+        return store.providers.filter { $0.displayName.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private var selectedTitle: String {
+        if selection == .notifications { return "Notifications" }
+        if case let .provider(id) = selection,
+           let provider = store.providers.first(where: { $0.id == id }) {
+            return provider.displayName
+        }
+        return "AI Usage"
+    }
+
+    private func sidebarStatus(for provider: QuotaProvider) -> String {
+        let state = store.states[provider.id]
+        if state?.needsAuthentication == true { return "Sign-in required" }
+        return state?.connected == true ? "Connected" : "Not connected"
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Connections")
-                        .font(.largeTitle)
-                        .bold()
-                    Text("Connect only the providers you use. Credential fields start empty and are cleared after each connection attempt.")
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+        NavigationSplitView {
+            List(selection: $selection) {
+                ForEach(visibleProviders) { provider in
+                    HStack(spacing: 10) {
+                        ProviderAvatar(provider: provider, size: 32)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(provider.displayName)
+                            Text(sidebarStatus(for: provider))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                    .tag(AccountSelection.provider(provider.id))
                 }
-
-                notificationsSection
-
-                ForEach(store.providers) { provider in
-                    connectionSection(for: provider)
+                if searchText.isEmpty || "Notifications".localizedCaseInsensitiveContains(searchText) {
+                    Label("Notifications", systemImage: "bell")
+                        .padding(.vertical, 5)
+                        .tag(AccountSelection.notifications)
                 }
             }
-            .padding(24)
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(UsagePanelColors.sidebar)
+            .searchable(text: $searchText, placement: .sidebar, prompt: "Search Settings")
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
+        } detail: {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if selection == .notifications {
+                        notificationsSection
+                    } else if case let .provider(id) = selection,
+                              let provider = store.providers.first(where: { $0.id == id }) {
+                        ProviderAccountPanel(provider: provider, state: store.states[id])
+                            .id(id)
+
+                        SettingsSection(title: "Connection", systemImage: "link") {
+                            connectionSection(for: provider)
+                        }
+
+                        if store.states[id]?.connected == true {
+                            SettingsSection(title: "Activity", systemImage: "chart.bar") {
+                                VStack(spacing: 0) {
+                                    SettingsValueRow(
+                                        title: "Monitoring",
+                                        value: connectionStatus(for: provider, state: store.states[id], store: store)
+                                    )
+                                    if let date = store.states[id]?.snapshot?.observedAt {
+                                        Divider()
+                                        SettingsValueRow(title: "Last quota reading", value: date.formatted(date: .numeric, time: .shortened))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: 620, alignment: .leading)
+                .frame(maxWidth: .infinity)
+            }
+            .background(UsagePanelColors.outer)
         }
-        .frame(minWidth: 560, idealWidth: 620, minHeight: 520)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .navigationSplitViewStyle(.balanced)
+        .toolbar(removing: .sidebarToggle)
+        .toolbarBackground(UsagePanelColors.outer, for: .windowToolbar)
+        .toolbarBackground(.visible, for: .windowToolbar)
+        .navigationTitle(selectedTitle)
+        .frame(minWidth: 720, idealWidth: 780, minHeight: 500, idealHeight: 560)
+        .onAppear {
+            if selection == nil { selection = store.providers.first.map { .provider($0.id) } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showProviderAccount)) { notification in
+            guard let id = notification.object as? ProviderID,
+                  store.providers.contains(where: { $0.id == id }) else { return }
+            selection = .provider(id)
+        }
+        .onChange(of: selection) {
+            secrets.removeAll()
+            copiedStatusLineCommand = false
+        }
     }
 
     private var notificationsSection: some View {
-        GroupBox("Notifications") {
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(
-                    "Notify me when a quota resets",
-                    isOn: Binding(
-                        get: { store.notificationsEnabled },
-                        set: { enabled in
-                            Task { await store.setNotifications(enabled) }
-                        }
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 14) {
+                Image(systemName: "bell.badge")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.tint)
+                    .frame(width: 52, height: 52)
+                    .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Notifications")
+                        .font(.title2.bold())
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Quota reset alerts while AI Usage is running.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            SettingsSection(title: "Reset alerts", systemImage: "arrow.clockwise.circle") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(
+                        "Notify me when a quota resets",
+                        isOn: Binding(
+                            get: { store.notificationsEnabled },
+                            set: { enabled in
+                                Task { await store.setNotifications(enabled) }
+                            }
+                        )
                     )
-                )
 
-                Text("Notifications are off unless you turn them on.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if !store.notificationStatus.isEmpty {
-                    Text(store.notificationStatus)
+                    Text("AI Usage checks active subscription sources about once a minute. Quitting the app stops checks and alerts.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    if !store.notificationStatus.isEmpty {
+                        Label(store.notificationStatus, systemImage: "info.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 4)
         }
     }
 
@@ -409,61 +610,139 @@ struct ConnectionView: View {
         let state = store.states[provider.id]
         let isBusy = busyProviders.contains(provider.id) || state?.loading == true
 
-        GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                switch provider.connection {
-                case let .statusLine(toolName, helperName):
-                    statusLineSetup(toolName: toolName, helperName: helperName)
-                case .signedExecutable:
-                    signedExecutableSetup(for: provider)
-                case .apiKey:
-                    secretSetup(for: provider)
+        VStack(alignment: .leading, spacing: 14) {
+            switch provider.connection {
+            case let .statusLine(toolName, helperName, desktopPlugin):
+                statusLineSetup(for: provider, toolName: toolName, helperName: helperName, desktopPlugin: desktopPlugin)
+            case .signedExecutable:
+                signedExecutableSetup(for: provider)
+            case .apiKey:
+                secretSetup(for: provider)
+            case .oauth, .browserLogin:
+                browserConnectionSummary(for: provider, state: state)
+            }
+
+            if let message = errors[provider.id] ?? state?.message, !message.isEmpty {
+                let isError = errors[provider.id] != nil || state?.needsAuthentication == true
+                Label(message, systemImage: isError ? "exclamationmark.circle" : "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(isError ? .red : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                if case .oauth = provider.connection {
+                    Label("Secured in login Keychain", systemImage: "key.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if case .browserLogin = provider.connection {
+                    Label("Secured in login Keychain", systemImage: "key.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-
-                if let message = errors[provider.id] ?? state?.message, !message.isEmpty {
-                    Text(message)
-                        .font(.callout)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
+                if state?.connected == true {
+                    Button(disconnectButtonTitle(for: provider), role: .destructive) {
+                        Task { await disconnect(provider) }
+                    }
+                    .usageActionStyle()
+                    .disabled(isBusy)
                 }
-
-                HStack(spacing: 12) {
-                    Button(state?.connected == true ? "Reconnect" : "Connect") {
-                        Task { await connect(provider) }
-                    }
-                    .disabled(isBusy || !canConnect(provider))
-
-                    if state?.connected == true {
-                        Button("Remove Connection", role: .destructive) {
-                            Task { await disconnect(provider) }
-                        }
-                        .disabled(isBusy)
-                    }
-
-                    if isBusy {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-
-                    Spacer()
-
-                    Link("Provider account", destination: provider.accountURL)
+                Button(connectButtonTitle(for: provider, connected: state?.connected == true)) {
+                    Task { await connect(provider) }
+                }
+                .usageActionStyle(prominent: state?.connected != true || state?.needsAuthentication == true)
+                .disabled(isBusy || !canConnect(provider))
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Working")
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 6)
-        } label: {
-            HStack(spacing: 8) {
-                Text(provider.displayName)
-                    .font(.headline)
-                Text(state?.connected == true ? "Connected" : "Not connected")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            .usageGlassGroup()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func browserConnectionSummary(for provider: QuotaProvider, state: ProviderState?) -> some View {
+        let connected = state?.connected == true
+        let needsAuthentication = state?.needsAuthentication == true
+        return HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(connected ? "\(provider.displayName) subscription" : "Browser sign-in")
+                    .font(.body.weight(.medium))
+                Text(
+                    needsAuthentication
+                        ? "Reconnect to renew your authorization."
+                        : connected ? "Your subscription connection is active." : "Use your provider account to connect AI Usage."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if connected {
+                ConnectionBadge(
+                    title: needsAuthentication ? "Action needed" : "Connected",
+                    status: needsAuthentication ? .attention : .connected
+                )
             }
         }
     }
 
-    private func statusLineSetup(toolName: String, helperName: String) -> some View {
+    private func disconnectButtonTitle(for provider: QuotaProvider) -> String {
+        switch provider.connection {
+        case .oauth, .browserLogin: return "Disconnect"
+        default: return store.usesDesktopFeed(provider.id) ? "Stop Monitoring" : "Remove Connection"
+        }
+    }
+
+    private func connectButtonTitle(for provider: QuotaProvider, connected: Bool) -> String {
+        if usesDesktopFeedSelection(for: provider) {
+            return connected ? "Restart Monitoring" : "Start Monitoring"
+        }
+        if case .apiKey = provider.connection { return connected ? "Verify & Replace Key" : "Verify & Connect" }
+        switch provider.connection {
+        case .oauth, .browserLogin:
+            return connected ? "Reconnect…" : "Connect with \(provider.displayName)"
+        default:
+            return connected ? "Reconnect" : "Connect"
+        }
+    }
+
+
+    @ViewBuilder
+    private func statusLineSetup(
+        for provider: QuotaProvider,
+        toolName: String,
+        helperName: String,
+        desktopPlugin: Bool
+    ) -> some View {
+        if desktopPlugin {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("Quota source", selection: desktopFeedBinding(for: provider)) {
+                    Text("Claude Desktop local plugin").tag(true)
+                    Text("\(toolName) status-line helper").tag(false)
+                }
+                .pickerStyle(.radioGroup)
+
+                Text("The source preference is saved only when you connect or reconnect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if usesDesktopFeedSelection(for: provider) {
+                    ClaudeDesktopSetupView()
+                } else {
+                    statusLineInstructions(toolName: toolName, helperName: helperName)
+                }
+            }
+        } else {
+            statusLineInstructions(toolName: toolName, helperName: helperName)
+        }
+    }
+
+    private func statusLineInstructions(toolName: String, helperName: String) -> some View {
         let command = statusLineCommand(helperName: helperName)
 
         return VStack(alignment: .leading, spacing: 8) {
@@ -493,6 +772,21 @@ struct ConnectionView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func desktopFeedBinding(for provider: QuotaProvider) -> Binding<Bool> {
+        Binding(
+            get: { usesDesktopFeedSelection(for: provider) },
+            set: { selected in
+                desktopFeedSelections[provider.id] = selected
+                errors[provider.id] = nil
+            }
+        )
+    }
+
+    private func usesDesktopFeedSelection(for provider: QuotaProvider) -> Bool {
+        guard supportsDesktopFeed(provider) else { return false }
+        return desktopFeedSelections[provider.id] ?? (store.states[provider.id]?.connected != true || store.usesDesktopFeed(provider.id))
     }
 
     private func signedExecutableSetup(for provider: QuotaProvider) -> some View {
@@ -559,6 +853,8 @@ struct ConnectionView: View {
             return executables[provider.id] != nil
         case .apiKey:
             return !(secrets[provider.id]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        case .oauth, .browserLogin:
+            return true
         }
     }
 
@@ -586,7 +882,7 @@ struct ConnectionView: View {
         switch provider.connection {
         case .signedExecutable:
             executable = executables[id]
-        case .statusLine, .apiKey:
+        case .statusLine, .apiKey, .oauth, .browserLogin:
             executable = nil
         }
 
@@ -600,7 +896,12 @@ struct ConnectionView: View {
         }
 
         do {
-            try await store.connect(id, secret: secret, executable: executable)
+            try await store.connect(
+                id,
+                secret: secret,
+                executable: executable,
+                desktopFeed: usesDesktopFeedSelection(for: provider)
+            )
         } catch {
             errors[id] = connectionMessage(for: error)
         }

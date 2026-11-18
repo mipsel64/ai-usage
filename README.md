@@ -6,34 +6,25 @@ AI Usage is a native macOS menu bar app for Claude Code, Codex, Z.ai GLM Coding 
 
 ## Run
 
-Use macOS 14.4 or later with the Swift 6 toolchain. Run `make run` to build, sign, and open `.build/AI Usage.app`. Use the app bundle, not `swift run`, for macOS notifications. You can copy the bundle to `/Applications`. Move it **before** you configure the Claude helper. Run `make test` for the offline test suite. CI uses Xcode 26.5 (17F42).
+Use macOS 14.4 or later with the Swift 6 toolchain. Run `bash Packaging/setup-development-signing.sh` once to create a local **AI Usage Development** code-signing certificate. This keeps the app’s trusted-application requirement stable across rebuilds. Self-signed builds have no Apple team partition, so macOS can still request Keychain approval after a rebuild. Use an Apple Development or Developer ID identity for fully stable Keychain access. The setup writes the ignored `.local.mk` file. Run `make run` to build, sign, and open `.build/AI Usage.app`. Use the app bundle, not `swift run`, for macOS notifications. You can copy the bundle to `/Applications`. Run `make test` for the offline test suite. CI uses Xcode 26.5 (17F42).
 
 Open **Connections** in the menu. Enable individual providers and allow reset notifications if you want them. The app polls connected providers at launch and approximately once a minute while running. You can also refresh a provider from the menu. Failed reads do not refill quota: the menu keeps the last reading with its observation time. A missing reset date means the provider did not report one.
+Click the gauge to see current quota and reset times. Use **Connect** beside a provider to start subscription sign-in directly. Claude asks you to paste the authorization code shown after browser sign-in. Codex returns through a loopback callback. Kimi uses device authorization and shows its sign-in code while the app waits. Z.ai uses browser sign-in and creates its subscription credential automatically.
 
-| Provider | Connect | Manual reset |
+You can also open **Manage Accounts…**, select a provider, and choose its connect action. OAuth tokens and the Z.ai subscription key stay in the login Keychain. Choose **Notifications** in the sidebar to turn on reset alerts. AI Usage checks active sources approximately once a minute while running. If a read fails, the menu keeps the last observation and its time. A missing reset date means the provider did not report one.
+
+The menu and account controls use native Liquid Glass on macOS 26 and later. With Reduce Transparency enabled, or on earlier supported versions, the app uses bordered controls.
+
+| Provider | Subscription authentication | Manual reset |
 |---|---|---|
-| Claude | Configure the bundled status-line helper in Claude Code, then enable the connection. | Open [Claude Usage](https://claude.ai/settings/usage) from the menu. Eligible accounts can confirm **Reset for free** there. |
-| Codex | Sign in to the official Codex CLI with ChatGPT. Select the signed native `codex` executable, not a shell or npm wrapper. | Confirm redemption of one identified, free banked reset in the app. If the CLI does not report an eligible credit ID, use the [Codex usage dashboard](https://chatgpt.com/codex/settings/usage). |
-| Z.ai | Enter an international GLM Coding Plan key. The reader uses `api.z.ai`, not the China endpoint. | Open the [subscription page](https://z.ai/manage-apikey/subscription). Five-hour or weekly reset cards depend on the account and campaign. |
-| Kimi | Enter a Kimi Code membership key for `api.kimi.com`, not a Moonshot developer-platform key. | Kimi documents automatic resets. The menu links to the [Kimi Code Console](https://www.kimi.com/code/console); an Extra Usage purchase is not a reset. |
+| Claude | Choose **Connect with Claude** and complete browser OAuth. Paste the returned `code#state` value into AI Usage. The app reads the Claude Code OAuth usage endpoint. | Open [Claude Usage](https://claude.ai/settings/usage) from the menu. Eligible accounts can confirm **Reset for free** there. |
+| Codex | Choose **Connect with Codex** and complete browser OAuth. AI Usage listens on `127.0.0.1:1455` for the callback, then reads account-scoped usage directly. | Confirm redemption of one identified, free banked reset in the app. If no eligible credit ID is reported, use the [Codex usage dashboard](https://chatgpt.com/codex/settings/usage). |
+| Z.ai | Choose **Connect with Z.ai** and complete browser sign-in. AI Usage captures the `zcode://` callback automatically and restores the previous URL handler. A branded paste dialog remains available as a fallback. The app creates an **AI Usage** subscription key and stores it in the login Keychain. | Open the [subscription page](https://z.ai/manage-apikey/subscription). Five-hour or weekly reset cards depend on the account and campaign. |
+| Kimi | Choose **Connect with Kimi**, open the device-authorization page, and confirm the displayed code. AI Usage polls until authorization finishes or expires. | Kimi documents automatic resets. The menu links to the [Kimi Code Console](https://www.kimi.com/code/console); an Extra Usage purchase is not a reset. |
 
 ### Claude Code setup
-
 Copy the helper command from Connections into the `statusLine` section of your Claude Code settings. Merge the section; do not replace the entire settings file. For a bundle installed in `/Applications`:
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "'/Applications/AI Usage.app/Contents/Helpers/claude-quota-capture'",
-    "refreshInterval": 60
-  }
-}
-```
-
-To retain an existing status line, use `'<helper path>' --passthrough | <your existing command>`. Only pipe to a command you trust: it receives the original Claude status-line payload. The app never edits your Claude configuration. To stop capture, remove the helper from `statusLine`; disconnecting in AI Usage alone stops monitoring, not the external Claude hook. Remove `~/Library/Application Support/ai-usage/claude.json` to delete the helper’s last reading.
-
-Use Claude Code after setup. Claude supplies rate limits for eligible sessions after an API response. The helper stores quota fields and an observation time only. An inactive CLI cannot supply a fresh reading. The Codex CLI must support `account/rateLimits/read` for quota and `account/rateLimitResetCredit/consume` for direct redemption.
+Direct OAuth reuses the providers’ CLI client configuration. Provider terms and undocumented endpoints can change. AI Usage reports endpoint failures and does not substitute estimated quota.
 
 ### Reset notifications
 
@@ -42,14 +33,13 @@ The initial reading establishes a baseline. A fresh observation can show that a 
 ### Security
 
 The default build is local, ad-hoc signed with the hardened runtime. It is not notarized or App Sandbox restricted. The Codex CLI uses its own sign-in and runs with your user permissions. The app verifies its OpenAI Developer ID signature before use. The app has no automatic updater. For distribution, use a Developer ID identity (`make app SIGN_IDENTITY='Developer ID Application: …'`) and notarize the bundle separately.
-
-Z.ai and Kimi keys stay in the local login Keychain. Coding keys may permit more than quota reads; use a dedicated, revocable key. The app uses fixed first-party HTTPS endpoints, denies redirects, and does not collect analytics. Disconnect removes the app’s saved key, not the provider’s key. To revoke it, use the provider console. Preferences contain connection choices and the last normalized quota observation, not tokens or raw responses. Rebuilding with a different signing identity may require new Keychain approval.
+Automatic quota checks never open Keychain dialogs. Manual refresh and reset redemption can request Keychain access. Local builds use the stable self-signed **AI Usage Development** identity after `bash Packaging/setup-development-signing.sh`; without it, they use an ad-hoc signature. They use the hardened runtime and are not notarized or restricted by the App Sandbox. OAuth sign-in uses PKCE and state validation where supported. Claude, Codex, and Kimi tokens stay in the local login Keychain; Codex account IDs stay with those tokens. The app uses fixed first-party HTTPS endpoints, denies redirects, and does not collect analytics. Disconnect removes the app’s saved credentials. It does not revoke the provider’s OAuth grant or subscription key. Use the provider console to revoke access. Preferences contain connection choices and the last normalized quota observation, not tokens or raw responses. Rebuilding with a different signing identity may require new Keychain approval. The app has no automatic updater.
 
 [AGENT.md](AGENT.md) describes how to register a new `QuotaProvider` without changing the menu, polling, or notifications. Adapters are compiled into the app; it does not load external plug-ins.
 
 ### Provider references
 
-- [Claude Code status-line data](https://code.claude.com/docs/en/statusline) and [Claude limit resets](https://support.claude.com/en/articles/17007452-what-is-a-limit-reset)
-- [Codex app-server protocol](https://learn.chatgpt.com/docs/app-server) and [banked reset rules](https://help.openai.com/en/articles/20001498-how-resets-work-in-codex)
-- [Z.ai quota rules and reset cards](https://docs.z.ai/devpack/faq). The monitor endpoint is used by the dashboard and [a public quota reader](https://github.com/shaftoe/pi-zai-usage/blob/master/src/api.ts); its wire format is not a published stable API.
+- [Claude OAuth client reference](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/auth/oauth/anthropic.ts), [Claude limit resets](https://support.claude.com/en/articles/17007452-what-is-a-limit-reset), and the undocumented [OAuth usage endpoint contract](https://github.com/FullFran/claudeops-tui/blob/main/docs/oauth-usage-endpoint.md)
+- [Codex OAuth login](https://github.com/openai/codex/tree/main/codex-rs/login), [usage and reset-credit client](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client/rate_limit_resets.rs), and [banked reset rules](https://help.openai.com/en/articles/20001498-how-resets-work-in-codex)
+- [Z.ai browser sign-in and key provisioning](https://github.com/can1357/oh-my-pi/blob/main/packages/ai/src/registry/oauth/zai.ts), [quota rules and reset cards](https://docs.z.ai/devpack/faq). The monitor endpoint is used by the dashboard and [a public quota reader](https://github.com/shaftoe/pi-zai-usage/blob/master/src/api.ts); its wire format is not a published stable API.
 - [Kimi membership limits](https://www.kimi.com/code/docs/en/kimi-code/membership) and the [official CLI usage reader](https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/managed-usage.ts)
