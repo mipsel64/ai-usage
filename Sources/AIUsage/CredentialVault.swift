@@ -44,15 +44,18 @@ struct CredentialVault: CredentialVaulting {
 
     func store(_ value: String, for id: ProviderID) throws {
         let target = try file(for: id)
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                                    attributes: [.posixPermissions: Self.privateDirectoryMode])
+        if !FileManager.default.fileExists(atPath: directory.path) {
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: Self.privateDirectoryMode])
+            } catch {
+                throw VaultError.inaccessible
+            }
+            // Best effort: a volume without this attribute must not stop a renewed sign-in from being saved.
             var excluded = URLResourceValues()
             excluded.isExcludedFromBackup = true
             var backupTarget = directory
-            try backupTarget.setResourceValues(excluded)
-        } catch {
-            throw VaultError.inaccessible
+            try? backupTarget.setResourceValues(excluded)
         }
         let temporary = directory.appendingPathComponent(".\(id.rawValue).\(UUID().uuidString)", isDirectory: false)
         let descriptor = open(temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, Self.privateFileMode)
