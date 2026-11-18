@@ -3,10 +3,16 @@ import Foundation
 /// Unverified JWT claims are used only for display, never for authorization.
 enum CodexAccountIdentity {
     static func decode(tokens: OAuthTokens) -> AccountIdentity? {
-        for token in [tokens.idToken, tokens.accessToken].compactMap({ $0 }) {
-            if let identity = decode(jwt: token) { return identity }
-        }
-        return nil
+        let idIdentity = tokens.idToken.flatMap { decode(jwt: $0) }
+        let accessIdentity = decode(jwt: tokens.accessToken)
+        guard let primary = idIdentity else { return accessIdentity }
+        guard let fallback = accessIdentity else { return primary }
+        return AccountIdentity(
+            email: primary.email ?? fallback.email,
+            name: primary.name ?? fallback.name,
+            plan: primary.plan ?? fallback.plan,
+            organization: primary.organization ?? fallback.organization
+        ).sanitized()
     }
 
     static func decode(jwt: String) -> AccountIdentity? {
@@ -16,7 +22,9 @@ enum CodexAccountIdentity {
         let organizations = auth?["organizations"] as? [[String: Any]]
         let organization = organizations?.first(where: { $0["is_default"] as? Bool == true }) ?? organizations?.first
         return AccountIdentity(
-            email: (claims["email"] as? String) ?? (profile?["email"] as? String),
+            email: AccountIdentity.sanitizedEmail(claims["email"] as? String)
+                ?? AccountIdentity.sanitizedEmail(profile?["email"] as? String),
+            name: claims["name"] as? String,
             plan: auth?["chatgpt_plan_type"] as? String,
             organization: organization?["title"] as? String
         ).sanitized()

@@ -23,6 +23,7 @@ struct AccountIdentityStoreTests {
         let vault = AccountMemoryVault()
         let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
         try await store.connect(id, secret: "synthetic-secret")
+        await waitForAccountRead(store)
         #expect(store.states[id]?.account == identity)
         #expect(await reads.count == 1)
         await store.refresh(id)
@@ -36,6 +37,7 @@ struct AccountIdentityStoreTests {
         let provider = makeProvider { _ in nil }
         let store = UsageStore(providers: [provider], defaults: defaults, vault: AccountMemoryVault())
         try await store.connect(id, secret: "synthetic-secret")
+        await waitForAccountRead(store)
         #expect(store.states[id]?.connected == true)
         #expect(store.states[id]?.snapshot == snapshot)
         #expect(store.states[id]?.account == nil)
@@ -86,6 +88,7 @@ struct AccountIdentityStoreTests {
         try vault.store("stored-synthetic-secret", for: id)
         let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
         await store.refresh(id)
+        await waitForAccountRead(store)
         #expect(store.states[id]?.account == identity)
         #expect(store.states[id]?.loading == false)
         await store.refresh(id)
@@ -114,6 +117,7 @@ struct AccountIdentityStoreTests {
         #expect(store.states[id]?.message == VaultError.inaccessible.localizedDescription)
         vault.clearReadError()
         await store.refresh(id, interactive: true)
+        await waitForAccountRead(store)
         #expect(await reads.count == 1)
         #expect(store.states[id]?.account == identity)
         #expect(store.states[id]?.message == nil)
@@ -133,6 +137,7 @@ struct AccountIdentityStoreTests {
         try vault.store("stored-synthetic-secret", for: id)
         let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
         await store.refresh(id)
+        await waitForAccountRead(store)
         await store.refresh(id)
         #expect(await reads.count == 1)
         #expect(store.states[id]?.account == nil)
@@ -142,7 +147,7 @@ struct AccountIdentityStoreTests {
         #expect(store.states[id]?.loading == false)
     }
 
-    @Test func quotaStateIsFinalBeforeIdentityReadStarts() async throws {
+    @Test func refreshReturnsWithFinalQuotaStateWhileIdentityReadIsBlocked() async throws {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(true, forKey: "connected.\(id.rawValue)")
@@ -156,7 +161,7 @@ struct AccountIdentityStoreTests {
         let vault = AccountMemoryVault()
         try vault.store("stored-synthetic-secret", for: id)
         let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
-        let refresh = Task { await store.refresh(id) }
+        await store.refresh(id)
         for await _ in started.stream { }
         #expect(store.states[id]?.snapshot == snapshot)
         #expect(defaults.data(forKey: "snapshot.\(id.rawValue)") != nil)
@@ -164,8 +169,9 @@ struct AccountIdentityStoreTests {
         #expect(store.states[id]?.needsAuthentication == false)
         #expect(store.states[id]?.loading == false)
         #expect(store.states[id]?.account == nil)
+        let accountTask = store.accountReadTask(for: id)
         gate.continuation.finish()
-        await refresh.value
+        await accountTask?.value
         #expect(store.states[id]?.account == identity)
     }
 
@@ -183,16 +189,17 @@ struct AccountIdentityStoreTests {
         let vault = AccountMemoryVault()
         try vault.store("stored-synthetic-secret", for: id)
         let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
-        let refresh = Task { await store.refresh(id) }
+        await store.refresh(id)
         for await _ in started.stream { }
+        let accountTask = store.accountReadTask(for: id)
         try await store.disconnect(id)
         gate.continuation.finish()
-        await refresh.value
+        await accountTask?.value
         #expect(store.states[id]?.connected == false)
         #expect(store.states[id]?.account == nil)
     }
 
-    @Test func disconnectIgnoresAnOutstandingIdentityRead() async throws {
+    @Test func connectReturnsWhileIdentityReadIsBlockedAndDisconnectIgnoresIt() async throws {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
         let started = AsyncStream.makeStream(of: Void.self)
@@ -203,14 +210,52 @@ struct AccountIdentityStoreTests {
             return identity
         }
         let store = UsageStore(providers: [provider], defaults: defaults, vault: AccountMemoryVault())
-        let connection = Task { try await store.connect(id, secret: "synthetic-secret") }
+        try await store.connect(id, secret: "synthetic-secret")
+        #expect(store.states[id]?.connected == true)
+        #expect(store.states[id]?.account == nil)
         for await _ in started.stream { }
+        let accountTask = store.accountReadTask(for: id)
         try await store.disconnect(id)
         gate.continuation.finish()
-        try await connection.value
+        await accountTask?.value
         #expect(store.states[id]?.connected == false)
         #expect(store.states[id]?.account == nil)
         #expect(defaults.data(forKey: "account.\(id.rawValue)") == nil)
+    }
+
+    @Test func disconnectDuringQuotaReadPreventsIdentityStart() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "connected.\(id.rawValue)")
+        let reads = AccountReadCounter()
+        let started = AsyncStream.makeStream(of: Void.self)
+        let gate = AsyncStream.makeStream(of: Void.self)
+        let provider = QuotaProvider(
+            id: id, displayName: "Identity", accountURL: url, connection: .apiKey,
+            reset: .automaticOnly,
+            readAccount: { _ in
+                await reads.record()
+                return identity
+            }
+        ) { _ in
+            started.continuation.finish()
+            for await _ in gate.stream { break }
+            return snapshot
+        }
+        let vault = AccountMemoryVault()
+        try vault.store("stored-synthetic-secret", for: id)
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
+        let refresh = Task { await store.refresh(id) }
+        for await _ in started.stream { }
+        try await store.disconnect(id)
+        gate.continuation.finish()
+        await refresh.value
+        #expect(await reads.count == 0)
+        #expect(store.accountReadTask(for: id) == nil)
+    }
+
+    private func waitForAccountRead(_ store: UsageStore) async {
+        await store.accountReadTask(for: id)?.value
     }
 
     private func makeProvider(

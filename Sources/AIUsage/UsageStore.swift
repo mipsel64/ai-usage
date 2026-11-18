@@ -29,6 +29,7 @@ final class UsageStore {
     private(set) var states: [ProviderID: ProviderState] = [:]
     private var generations: [ProviderID: UUID] = [:]
     private var loadedAccounts: Set<ProviderID> = []
+    private var accountTasks: [ProviderID: Task<Void, Never>] = [:]
     private var redeeming: Set<ProviderID> = []
     private(set) var notificationsEnabled: Bool
     private(set) var notificationStatus: String = ""
@@ -83,6 +84,8 @@ final class UsageStore {
 
     func connect(_ id: ProviderID, secret: String? = nil, executable: URL? = nil) async throws {
         guard let provider = providers.first(where: { $0.id == id }), !redeeming.contains(id) else { throw QuotaError.unavailable }
+        accountTasks[id]?.cancel()
+        accountTasks[id] = nil
         let generation = generations[id]
         let firstReading: QuotaSnapshot?
         var connectionAccess: ProviderAccess?
@@ -131,7 +134,7 @@ final class UsageStore {
         }
         let connectedGeneration = UUID()
         generations[id] = connectedGeneration
-        loadedAccounts.insert(id)
+        loadedAccounts.remove(id)
         defaults.removeObject(forKey: "snapshot.\(id.rawValue)")
         defaults.removeObject(forKey: "account.\(id.rawValue)")
         defaults.set(true, forKey: "connected.\(id.rawValue)")
@@ -149,27 +152,38 @@ final class UsageStore {
             await refresh(id)
         }
         if signInAccount == nil, let connectionAccess {
-            await updateAccount(for: provider, access: connectionAccess, generation: connectedGeneration)
+            startAccountRead(for: provider, access: connectionAccess, generation: connectedGeneration)
         }
     }
 
     func disconnect(_ id: ProviderID) async throws {
         guard let provider = providers.first(where: { $0.id == id }), !redeeming.contains(id) else { throw QuotaError.unavailable }
         generations[id] = UUID()
-        loadedAccounts.remove(id)
         switch provider.connection {
         case .apiKey, .browserLogin, .oauth: try vault.remove(id)
         default: break
         }
+        loadedAccounts.remove(id)
+        accountTasks[id]?.cancel()
+        accountTasks[id] = nil
         for prefix in ["connected", "path", "snapshot", "oauthVersion", "account"] { defaults.removeObject(forKey: "\(prefix).\(id.rawValue)") }
         states[id] = ProviderState()
     }
 
-    private func updateAccount(for provider: QuotaProvider, access: ProviderAccess, generation: UUID?) async {
-        guard let readAccount = provider.readAccount else { return }
-        let identity = await readAccount(access)?.sanitized()
-        guard generation == generations[provider.id], states[provider.id]?.connected == true else { return }
-        states[provider.id]?.account = identity
+    private func startAccountRead(for provider: QuotaProvider, access: ProviderAccess, generation: UUID?) {
+        let id = provider.id
+        guard let readAccount = provider.readAccount, generation == generations[id],
+              states[id]?.connected == true, !loadedAccounts.contains(id) else { return }
+        loadedAccounts.insert(id)
+        accountTasks[id] = Task {
+            let identity = await readAccount(access)?.sanitized()
+            guard !Task.isCancelled, generation == generations[id], states[id]?.connected == true else { return }
+            states[id]?.account = identity
+        }
+    }
+
+    func accountReadTask(for id: ProviderID) -> Task<Void, Never>? {
+        accountTasks[id]
     }
 
     private func access(for provider: QuotaProvider, interactive: Bool) async throws -> ProviderAccess {
@@ -266,16 +280,12 @@ final class UsageStore {
             states[id]?.message = nil
             states[id]?.needsAuthentication = false
             defaults.set(try JSONEncoder().encode(reading), forKey: "snapshot.\(id.rawValue)")
-            states[id]?.loading = false
             if notificationsEnabled, let last = state.snapshot, reading.observedAt > last.observedAt {
                 let reset = !reading.refreshedWindows(since: last).isEmpty
                 let credit = last.resetCredits.flatMap { before in reading.resetCredits.map { $0.availableCount > before.availableCount } } ?? false
                 if reset || credit { await postNotification(provider: provider, reset: reset, credit: credit) }
             }
-            if provider.readAccount != nil && !loadedAccounts.contains(id) {
-                loadedAccounts.insert(id)
-                await updateAccount(for: provider, access: readingAccess, generation: generation)
-            }
+            startAccountRead(for: provider, access: readingAccess, generation: generation)
         } catch {
             guard generation == generations[id] else { return }
             if case QuotaError.unauthorized = error { states[id]?.needsAuthentication = true }

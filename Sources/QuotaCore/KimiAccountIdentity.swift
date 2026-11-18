@@ -20,7 +20,8 @@ enum KimiAccountIdentity {
 
     static func decode(_ body: Data) -> AccountIdentity? {
         guard let root = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let userID = root["user_id"] as? String, !userID.isEmpty
+              let userID = root["user_id"] as? String,
+              !userID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
         return AccountIdentity(
             email: root["email"] as? String,

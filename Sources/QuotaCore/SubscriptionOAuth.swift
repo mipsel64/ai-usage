@@ -599,7 +599,18 @@ public enum SubscriptionOAuthTokens {
         case .claude:
             return try await ClaudeOAuth.refresh(refreshToken: tokens.refreshToken, transport: transport, now: now)
         case .codex:
-            return try await CodexOAuth.refresh(refreshToken: tokens.refreshToken, transport: transport, now: now)
+            let refreshed = try await CodexOAuth.refresh(
+                refreshToken: tokens.refreshToken, transport: transport, now: now
+            )
+            guard refreshed.idToken == nil, let previousIDToken = tokens.idToken,
+                  refreshed.accountID == tokens.accountID else { return refreshed }
+            return try OAuthTokens(
+                accessToken: refreshed.accessToken,
+                refreshToken: refreshed.refreshToken,
+                expiresAt: refreshed.expiresAt,
+                accountID: refreshed.accountID,
+                idToken: previousIDToken
+            ).validated()
         case .kimi:
             return try await KimiOAuth.refresh(refreshToken: tokens.refreshToken, transport: transport, now: now)
         default:
