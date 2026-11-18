@@ -90,6 +90,7 @@ struct ProviderAccountPanel: View {
                 Button("Usage Portal", systemImage: "arrow.up.right", action: openAccountPage)
                     .labelStyle(.titleAndIcon)
                     .accessibilityHint("Opens \(accountHost) in your default browser.")
+                    .help("Opens \(accountHost) in your default browser.")
             }
         }
     }

@@ -14,6 +14,14 @@ struct ProviderConnectionSection: View {
     let chooseExecutable: () -> Void
     let actions: ProviderConnectionActions
 
+    private var lastQuotaReading: String? {
+        guard state?.connected == true, state?.needsAuthentication != true else { return nil }
+        if let date = state?.snapshot?.observedAt {
+            return date.formatted(date: .abbreviated, time: .shortened)
+        }
+        return "Waiting for quota"
+    }
+
     var body: some View {
         Section {
             LabeledContent("Status") {
@@ -29,9 +37,9 @@ struct ProviderConnectionSection: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if let date = state?.snapshot?.observedAt {
+            if let lastQuotaReading {
                 LabeledContent("Last quota reading") {
-                    Text(date.formatted(date: .abbreviated, time: .shortened))
+                    Text(lastQuotaReading)
                         .foregroundStyle(.secondary)
                 }
             }

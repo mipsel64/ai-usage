@@ -12,7 +12,14 @@ struct AccountsSidebar: View {
                 ForEach(store.providers) { provider in
                     HStack(spacing: 10) {
                         ProviderAvatar(provider: provider, size: 22)
-                        Text(provider.displayName)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(provider.displayName)
+                            if store.states[provider.id]?.connected != true {
+                                Text("Not connected")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Spacer()
                         if store.states[provider.id]?.needsAuthentication == true {
                             Circle()
@@ -21,6 +28,7 @@ struct AccountsSidebar: View {
                                 .accessibilityLabel("Sign-in required")
                         }
                     }
+                    .accessibilityElement(children: .combine)
                     .tag(AccountSelection.provider(provider.id))
                 }
             }
