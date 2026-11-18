@@ -16,6 +16,8 @@ final class CredentialSession {
     private(set) var unsaved: Set<ProviderID> = []
     /// Providers whose refresh token the provider refused; only an interactive use tries again.
     private(set) var refused: Set<ProviderID> = []
+    /// When a renewal after a 401 last completed; a provider that rejects fresh tokens gets no renewal storm.
+    private var forcedRenewals: [ProviderID: Date] = [:]
 
     init(vault: any CredentialVaulting, oauth: any SubscriptionOAuthDriving, now: @escaping () -> Date) {
         self.vault = vault
@@ -43,17 +45,25 @@ final class CredentialSession {
     /// Returns the stored credential and renews OAuth tokens inside the renewal lead time.
     func access(for provider: QuotaProvider, interactive: Bool) async throws -> ProviderAccess {
         let id = provider.id
-        if refused.contains(id) {
-            guard interactive else { throw OAuthError.unauthorized }
+        if interactive {
             refused.remove(id)
+            forcedRenewals[id] = nil
+        } else if refused.contains(id) {
+            throw OAuthError.unauthorized
         }
         let access = try await cached(provider, interactive: interactive)
         retrySave(id)
         guard case let .oauth(tokens) = access, tokens.needsRefresh(at: now()) else { return access }
-        return .oauth(try await renew(tokens, for: id))
+        do {
+            return .oauth(try await renew(tokens, for: id))
+        } catch is ActionError where tokens.expiresAt > now() {
+            // A temporary renewal failure inside the lead time leaves room to read with the current token.
+            return access
+        }
     }
 
     /// Runs `operation`, and after a 401 runs it once more with renewed OAuth tokens.
+    /// Automatic uses renew this way at most once per lead time, so a provider that rejects fresh tokens causes no storm.
     func withRenewal<T>(
         _ access: ProviderAccess,
         for id: ProviderID,
@@ -65,7 +75,17 @@ final class CredentialSession {
             guard case let .oauth(rejected) = access, case let .oauth(current)? = cache[id] else {
                 throw QuotaError.unauthorized
             }
-            let tokens = if current == rejected { try await renew(rejected, for: id) } else { current }
+            let tokens: OAuthTokens
+            if current == rejected {
+                if let last = forcedRenewals[id], now().timeIntervalSince(last) < OAuthTokens.refreshLeadTime {
+                    throw QuotaError.unauthorized
+                }
+                let connection = connections[id]
+                tokens = try await renew(rejected, for: id)
+                if connection == connections[id] { forcedRenewals[id] = now() }
+            } else {
+                tokens = current
+            }
             let renewed = ProviderAccess.oauth(tokens)
             return (try await operation(renewed), renewed)
         }
@@ -142,6 +162,7 @@ final class CredentialSession {
         renewals[id] = nil
         unsaved.remove(id)
         refused.remove(id)
+        forcedRenewals[id] = nil
     }
 
     private static func decode(_ value: String) -> OAuthTokens? {
