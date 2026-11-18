@@ -275,7 +275,10 @@ final class UsageStore {
             if notificationsEnabled, let last = state.snapshot, reading.observedAt > last.observedAt {
                 let reset = !reading.refreshedWindows(since: last).isEmpty
                 let credit = last.resetCredits.flatMap { before in reading.resetCredits.map { $0.availableCount > before.availableCount } } ?? false
-                if reset || credit { await postNotification(provider: provider, reset: reset, credit: credit) }
+                let low = reading.lowWindows(since: last)
+                if reset || credit || !low.isEmpty {
+                    await postNotification(provider: provider, generation: generation, body: Self.notificationBody(reset: reset, credit: credit, low: low))
+                }
             }
             startAccountRead(for: provider, access: readingAccess, generation: generation)
         } catch {
@@ -385,14 +388,21 @@ final class UsageStore {
         }
     }
 
-    private func postNotification(provider: QuotaProvider, reset: Bool, credit: Bool) async {
+    static func notificationBody(reset: Bool, credit: Bool, low: [(window: QuotaWindow, threshold: Int)]) -> String {
+        var lines: [String] = []
+        if reset && credit { lines.append("Quota refreshed. A new reset credit is available.") }
+        else if reset { lines.append("Quota refreshed.") }
+        else if credit { lines.append("A new reset credit is available.") }
+        lines += low.map { "\($0.window.title) is below \($0.threshold)%." }
+        return lines.joined(separator: "\n")
+    }
+
+    private func postNotification(provider: QuotaProvider, generation: UUID?, body: String) async {
         await updatePermissionStatus()
-        guard notificationsEnabled, states[provider.id]?.connected == true else { return }
+        guard generation == generations[provider.id], notificationsEnabled, states[provider.id]?.connected == true else { return }
         let content = UNMutableNotificationContent()
         content.title = provider.displayName
-        if reset && credit { content.body = "Quota refreshed. A new reset credit is available." }
-        else if reset { content.body = "Quota refreshed." }
-        else { content.body = "A new reset credit is available." }
+        content.body = body
         do { try await UNUserNotificationCenter.current().add(.init(identifier: UUID().uuidString, content: content, trigger: nil)) }
         catch { notificationStatus = "macOS could not deliver the last notification." }
     }

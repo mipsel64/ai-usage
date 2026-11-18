@@ -66,6 +66,8 @@ public struct QuotaSnapshot: Equatable, Codable, Sendable {
         self.resetCredits = resetCredits
     }
 
+    public static let lowQuotaThresholds = [20, 10]
+
     public func refreshedWindows(since previous: Self) -> [QuotaWindow] {
         guard observedAt > previous.observedAt else { return [] }
         return windows.filter { window in
@@ -73,6 +75,18 @@ public struct QuotaSnapshot: Equatable, Codable, Sendable {
             if last.remainingPercent < 100 && window.remainingPercent == 100 { return true }
             guard let before = last.resetAt, let after = window.resetAt else { return false }
             return before <= observedAt && after > observedAt && after > before
+        }
+    }
+
+    // shortcut: a rolling window that moves around a threshold alerts at each downward crossing, add hysteresis if users report repeated alerts.
+    public func lowWindows(since previous: Self) -> [(window: QuotaWindow, threshold: Int)] {
+        guard observedAt > previous.observedAt else { return [] }
+        return windows.compactMap { window in
+            guard let last = previous.windows.first(where: { $0.id == window.id }) else { return nil }
+            let crossed = Self.lowQuotaThresholds.filter {
+                last.remainingPercent >= Double($0) && window.remainingPercent < Double($0)
+            }
+            return crossed.min().map { (window, $0) }
         }
     }
 }
