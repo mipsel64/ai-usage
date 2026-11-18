@@ -47,9 +47,9 @@ public enum ClaudeRemoteUsage {
         let payload = try JSONDecoder().decode(ClaudeUsagePayload.self, from: body)
         let values: [(String, String, ClaudeUsageWindow?)] = [
             ("five_hour", "5-hour limit", payload.fiveHour),
-            ("seven_day", "7-day limit", payload.sevenDay),
-            ("seven_day_opus", "7-day Opus limit", payload.sevenDayOpus),
-            ("seven_day_sonnet", "7-day Sonnet limit", payload.sevenDaySonnet),
+            ("seven_day", "Weekly limit", payload.sevenDay),
+            ("seven_day_opus", "Weekly Opus limit", payload.sevenDayOpus),
+            ("seven_day_sonnet", "Weekly Sonnet limit", payload.sevenDaySonnet),
         ]
         var windows = try values.compactMap { id, title, value in
             try value?.window(id: id, title: title)
@@ -150,7 +150,7 @@ private struct ClaudeScopedWeeklyLimit: Decodable {
             .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
         guard let percent, !hasMalformedReset else { throw QuotaError.invalidResponse }
         let window = try ClaudeUsageWindow(utilization: percent, resetsAt: resetsAt)
-            .window(id: "seven_day_\(slug)", title: "7-day \(modelName) limit")
+            .window(id: "seven_day_\(slug)", title: "Weekly \(modelName) limit")
         return slug.isEmpty ? nil : window
     }
 }
