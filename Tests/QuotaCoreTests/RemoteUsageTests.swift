@@ -117,6 +117,48 @@ struct RemoteUsageTests {
         )
     }
 
+    @Test func defaultObservationTimeFollowsQuotaResponse() async throws {
+        let transport = MockRemoteUsageTransport(body: Self.zaiQuotaBody)
+        let snapshot = try await RemoteUsage.fetch(
+            provider: .zai,
+            credential: "test-key",
+            transport: transport
+        )
+
+        let quotaReturnedAt = try #require(await transport.quotaReturnedAt)
+        #expect(snapshot.observedAt >= quotaReturnedAt)
+    }
+
+    @Test func zaiExcludesCardThatExpiresBeforeQuotaResponse() async throws {
+        let expiry = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.up) + 1)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 8 * 3_600)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let timestamp = formatter.string(from: expiry)
+        let transport = MockRemoteUsageTransport(
+            body: Self.zaiQuotaBody,
+            resetBody: Data(#"""
+                {"code":200,"success":true,"data":{"fiveHourResets":[
+                    {"available":true,"expireTime":"\#(timestamp)"}
+                ],"weekResets":[]}}
+            """#.utf8),
+            quotaRespondAfter: expiry
+        )
+        let snapshot = try await RemoteUsage.fetch(
+            provider: .zai,
+            credential: "test-key",
+            transport: transport
+        )
+
+        #expect(snapshot.resetCredits == ResetCredits(
+            availableCount: 0,
+            nextID: nil,
+            nextTitle: nil,
+            nextExpiry: nil
+        ))
+    }
+
     @Test func zaiReadsAvailableResetCountAndNearestExpiry() async throws {
         let transport = MockRemoteUsageTransport(
             body: Self.zaiQuotaBody,
@@ -662,6 +704,8 @@ struct RemoteUsageTests {
 private actor MockRemoteUsageTransport: RemoteUsageTransport {
     private let result: Result<RemoteUsageTransportResponse, URLError>
     private let resetResult: Result<RemoteUsageTransportResponse, URLError>?
+    private let quotaRespondAfter: Date?
+    private(set) var quotaReturnedAt: Date?
     private(set) var requests: [URLRequest] = []
 
     init(
@@ -669,8 +713,10 @@ private actor MockRemoteUsageTransport: RemoteUsageTransport {
         status: Int? = 200,
         resetBody: Data? = nil,
         resetStatus: Int? = 200,
-        resetErrorCode: URLError.Code? = nil
+        resetErrorCode: URLError.Code? = nil,
+        quotaRespondAfter: Date? = nil
     ) {
+        self.quotaRespondAfter = quotaRespondAfter
         result = .success(RemoteUsageTransportResponse(statusCode: status, body: body))
         if let resetErrorCode {
             resetResult = .failure(URLError(resetErrorCode))
@@ -684,13 +730,18 @@ private actor MockRemoteUsageTransport: RemoteUsageTransport {
     init(errorCode: URLError.Code) {
         result = .failure(URLError(errorCode))
         resetResult = nil
+        quotaRespondAfter = nil
     }
 
     func response(for request: URLRequest) async throws -> RemoteUsageTransportResponse {
         requests.append(request)
-        if request.url?.path == "/api/biz/customer-package-reset/list", let resetResult {
-            return try resetResult.get()
+        if request.url?.path == "/api/biz/customer-package-reset/list" {
+            return try (resetResult ?? result).get()
         }
+        if let quotaRespondAfter {
+            try await Task.sleep(for: .seconds(max(0, quotaRespondAfter.timeIntervalSinceNow)))
+        }
+        quotaReturnedAt = Date()
         return try result.get()
     }
 }
