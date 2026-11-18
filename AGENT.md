@@ -15,9 +15,10 @@ A quota refresh reads data. A quota reset changes an account. Keep those actions
 
 ## Boundaries
 
-- `Sources/QuotaCore`: adapters, data contracts, and reset detection. Keep SwiftUI and Keychain access out of this target.
+- `Sources/QuotaCore`: adapters, data contracts, and reset detection. Keep SwiftUI and credential storage out of this target.
 - `Sources/AIUsage`: menu, connections, credentials, polling, local notifications, and user confirmation. The catalog supplies the provider list. Do not switch on provider names here.
-- Keep API keys in the login Keychain. Do not read browser cookies, CLI token files, or another app’s Keychain items. Send each key only to its fixed provider endpoint. Reject redirects. Limit response size and time.
+- Keep credentials only in private files under `~/.config/aiusage` through `CredentialVault`. `CredentialSession` is the only code that reads or writes credentials or calls a token endpoint to renew. Do not read browser cookies, CLI token files, or another app’s Keychain items. Send each key only to its fixed provider endpoint. Reject redirects. Limit response size and time.
+- Tests use an in-memory vault or a temporary directory, never the real `~/.config/aiusage` or the login Keychain.
 - Verify the selected executable against the provider’s signing requirement before launch. Do not run a shell or search `PATH`. Keep notifications and error messages free of private payloads.
 
 ## Work method
