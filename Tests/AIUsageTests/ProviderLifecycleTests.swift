@@ -101,17 +101,16 @@ struct ProviderLifecycleTests {
         let snapshot = QuotaSnapshot(windows: [.init(id: "hour", title: "Hourly", remainingPercent: 53, resetAt: nil)], observedAt: .now)
         let provider = QuotaProvider(id: id, displayName: "Plan", accountURL: account, connection: .apiKey, reset: .automaticOnly) { _ in snapshot }
         let vault = RecordingCredentialVault()
-        let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
-        try await store.connect(id, secret: "secret")
+        try await UsageStore(providers: [provider], defaults: defaults, vault: vault).connect(id, secret: "secret")
 
-        await store.refresh(id)
+        await UsageStore(providers: [provider], defaults: defaults, vault: vault).refresh(id)
         #expect(vault.readInteractions == [false])
 
-        await store.refresh(id, interactive: true)
+        await UsageStore(providers: [provider], defaults: defaults, vault: vault).refresh(id, interactive: true)
         #expect(vault.readInteractions == [false, true])
     }
 
-    @Test func redeemResetAllowsKeychainInteractionButRefreshesAutomatically() async throws {
+    @Test func redeemResetAllowsKeychainInteractionOnFirstUse() async throws {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
         let snapshot = QuotaSnapshot(
@@ -133,7 +132,7 @@ struct ProviderLifecycleTests {
         let result = try await store.redeemReset(id, creditID: "credit")
 
         #expect(result == "The provider confirmed the reset.")
-        #expect(vault.readInteractions == [true, false])
+        #expect(vault.readInteractions == [true])
     }
 
     @Test func failedAutomaticKeychainReadKeepsLastGoodQuota() async throws {

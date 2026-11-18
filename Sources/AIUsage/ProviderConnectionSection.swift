@@ -33,7 +33,7 @@ struct ProviderConnectionSection: View {
             }
             if storesCredential {
                 LabeledContent("Credentials") {
-                    Label("Login Keychain", systemImage: "key")
+                    Label("\(CredentialVault.displayDirectory)/\(provider.id.rawValue)" as String, systemImage: "lock.doc")
                         .foregroundStyle(.secondary)
                 }
             }

@@ -83,7 +83,7 @@ final class SubscriptionOAuthController: SubscriptionOAuthDriving {
         prompts: any OAuthPrompting = NativeOAuthPrompt(),
         now: @escaping () -> Date = Date.init
     ) {
-        self.transport = transport ?? RemoteUsage.defaultTransport()
+        self.transport = transport ?? SubscriptionOAuthTokens.defaultTransport()
         self.browser = browser
         self.prompts = prompts
         self.now = now

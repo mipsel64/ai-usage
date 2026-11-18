@@ -30,7 +30,10 @@ public struct OAuthTokens: Codable, Equatable, Sendable {
         return self
     }
 
-    public func needsRefresh(at now: Date, leeway: TimeInterval = 60) -> Bool {
+    /// Renew this long before expiry, so a poll every minute renews in time even after a few failed attempts.
+    public static let refreshLeadTime: TimeInterval = 5 * 60
+
+    public func needsRefresh(at now: Date, leeway: TimeInterval = refreshLeadTime) -> Bool {
         expiresAt.timeIntervalSince(now) <= leeway
     }
 
@@ -123,7 +126,7 @@ public struct KimiDeviceAuthorization: Sendable {
 
 private struct OAuthTokenPayload: Decodable {
     let accessToken: String
-    let refreshToken: String
+    let refreshToken: String?
     let idToken: String?
     let expiresIn: Double?
 
@@ -164,7 +167,7 @@ private enum OAuthRequest {
         request.httpMethod = "POST"
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpShouldHandleCookies = false
-        request.timeoutInterval = 15
+        request.timeoutInterval = SubscriptionOAuthTokens.requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         return request
@@ -195,7 +198,9 @@ private enum OAuthRequest {
 private func decodeToken(
     _ body: Data,
     provider: ProviderID,
-    now: Date
+    now: Date,
+    previousRefreshToken: String? = nil,
+    previousAccountID: String? = nil
 ) throws -> OAuthTokens {
     let payload: OAuthTokenPayload
     do {
@@ -213,10 +218,12 @@ private func decodeToken(
     } else {
         throw OAuthError.invalidResponse
     }
+    // RFC 6749 section 6: a refresh response can omit refresh_token; the client then keeps its own.
+    guard let refreshToken = payload.refreshToken ?? previousRefreshToken else { throw OAuthError.invalidResponse }
 
     let accountID: String?
     if provider == .codex {
-        accountID = payload.idToken.flatMap(chatGPTAccountID) ?? chatGPTAccountID(payload.accessToken)
+        accountID = payload.idToken.flatMap(chatGPTAccountID) ?? chatGPTAccountID(payload.accessToken) ?? previousAccountID
         guard accountID != nil else { throw OAuthError.invalidResponse }
     } else {
         accountID = nil
@@ -232,7 +239,7 @@ private func decodeToken(
     do {
         return try OAuthTokens(
             accessToken: payload.accessToken,
-            refreshToken: payload.refreshToken,
+            refreshToken: refreshToken,
             expiresAt: now.addingTimeInterval(expiresIn),
             accountID: accountID,
             idToken: displayIDToken
@@ -242,15 +249,29 @@ private func decodeToken(
     }
 }
 
+/// Codes that a new attempt cannot correct: a spent or revoked sign-in (official Codex client and OpenAI documentation)
+/// and a rejected client or grant (RFC 6749 section 5.2).
+private let permanentTokenErrors: Set<String> = [
+    "invalid_grant", "invalid_refresh_token", "token_expired",
+    "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused",
+    "invalid_client", "unauthorized_client", "unsupported_grant_type", "invalid_scope",
+]
+
 private func checkTokenStatus(_ status: Int?, body: Data) throws {
     guard let status else { throw OAuthError.unavailable }
     if (200 ... 299).contains(status) { return }
-    let payload = try? JSONDecoder().decode(OAuthErrorPayload.self, from: body)
-    if status == 400 || status == 401 || status == 403 || payload?.error == "invalid_grant" {
+    if status == 401 || status == 403 || tokenErrorCode(body).map(permanentTokenErrors.contains) == true {
         throw OAuthError.unauthorized
     }
-    if status == 429 || status >= 500 { throw OAuthError.unavailable }
     throw OAuthError.unavailable
+}
+
+/// Reads `error` as a string, `error.code` when `error` is an object, or a top-level `code`.
+private func tokenErrorCode(_ body: Data) -> String? {
+    guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return nil }
+    if let code = object["error"] as? String { return code }
+    if let error = object["error"] as? [String: Any], let code = error["code"] as? String { return code }
+    return object["code"] as? String
 }
 
 private func chatGPTAccountID(_ jwt: String) -> String? {
@@ -344,7 +365,7 @@ public enum ClaudeOAuth {
         code: String,
         state: String,
         pkce: OAuthPKCE,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         let request = try OAuthRequest.json(url: tokenURL, fields: [
@@ -362,7 +383,7 @@ public enum ClaudeOAuth {
 
     public static func refresh(
         refreshToken: String,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         let request = try OAuthRequest.json(url: tokenURL, fields: [
@@ -372,7 +393,7 @@ public enum ClaudeOAuth {
         ])
         let response = try await RemoteUsage.response(for: request, transport: transport)
         try checkTokenStatus(response.statusCode, body: response.body)
-        return try decodeToken(response.body, provider: .claude, now: now)
+        return try decodeToken(response.body, provider: .claude, now: now, previousRefreshToken: refreshToken)
     }
 }
 
@@ -407,7 +428,7 @@ public enum CodexOAuth {
     public static func exchange(
         code: String,
         pkce: OAuthPKCE,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         let request = OAuthRequest.form(url: tokenURL, fields: [
@@ -424,7 +445,8 @@ public enum CodexOAuth {
 
     public static func refresh(
         refreshToken: String,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        previousAccountID: String? = nil,
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         let request = OAuthRequest.form(url: tokenURL, fields: [
@@ -434,7 +456,10 @@ public enum CodexOAuth {
         ])
         let response = try await RemoteUsage.response(for: request, transport: transport)
         try checkTokenStatus(response.statusCode, body: response.body)
-        return try decodeToken(response.body, provider: .codex, now: now)
+        return try decodeToken(
+            response.body, provider: .codex, now: now,
+            previousRefreshToken: refreshToken, previousAccountID: previousAccountID
+        )
     }
 }
 
@@ -446,7 +471,7 @@ public enum KimiOAuth {
 
     // First-party implementation: https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/auth/oauth.py
     public static func startDeviceAuthorization(
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport()
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport()
     ) async throws -> KimiDeviceAuthorization {
         let request = OAuthRequest.form(url: deviceURL, fields: ["client_id": clientID])
         let response = try await RemoteUsage.response(for: request, transport: transport)
@@ -456,7 +481,7 @@ public enum KimiOAuth {
 
     public static func poll(
         device: KimiDeviceAuthorization,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport()
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport()
     ) async throws -> OAuthTokens {
         try await poll(device: device, transport: transport, now: Date.init) { seconds in
             try await Task.sleep(for: .milliseconds(max(1, Int(seconds * 1000))))
@@ -526,7 +551,7 @@ public enum KimiOAuth {
 
     public static func refresh(
         refreshToken: String,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         let request = OAuthRequest.form(url: tokenURL, fields: [
@@ -536,7 +561,7 @@ public enum KimiOAuth {
         ])
         let response = try await RemoteUsage.response(for: request, transport: transport)
         try checkTokenStatus(response.statusCode, body: response.body)
-        return try decodeToken(response.body, provider: .kimi, now: now)
+        return try decodeToken(response.body, provider: .kimi, now: now, previousRefreshToken: refreshToken)
     }
 
     private static func decodeDevice(_ body: Data) throws -> KimiDeviceAuthorization {
@@ -588,10 +613,21 @@ public enum KimiOAuth {
 }
 
 public enum SubscriptionOAuthTokens {
+    /// A refresh that times out after the server rotated the refresh token loses the new token, so token requests wait longer than quota reads.
+    public static let requestTimeout: TimeInterval = 30
+
+    /// The quota-read transport with the same protections, and only the timeouts changed for token requests.
+    public static func defaultTransport() -> any RemoteUsageTransport {
+        let configuration = RemoteUsage.makeConfiguration()
+        configuration.timeoutIntervalForRequest = requestTimeout
+        configuration.timeoutIntervalForResource = requestTimeout
+        return URLSessionRemoteUsageTransport(configuration: configuration)
+    }
+
     public static func refresh(
         _ tokens: OAuthTokens,
         provider: ProviderID,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         _ = try tokens.validated()
@@ -600,8 +636,12 @@ public enum SubscriptionOAuthTokens {
             return try await ClaudeOAuth.refresh(refreshToken: tokens.refreshToken, transport: transport, now: now)
         case .codex:
             let refreshed = try await CodexOAuth.refresh(
-                refreshToken: tokens.refreshToken, transport: transport, now: now
+                refreshToken: tokens.refreshToken, previousAccountID: tokens.accountID, transport: transport, now: now
             )
+            // A different account means that the stored sign-in is no longer the one that the user connected.
+            if let previousAccount = tokens.accountID, refreshed.accountID != previousAccount {
+                throw OAuthError.unauthorized
+            }
             guard refreshed.idToken == nil, let previousIDToken = tokens.idToken,
                   refreshed.accountID == tokens.accountID else { return refreshed }
             return try OAuthTokens(

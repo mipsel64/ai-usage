@@ -137,6 +137,97 @@ struct SubscriptionOAuthTests {
         #expect(CodexAccountIdentity.decode(tokens: refreshed)?.email == "user@example.com")
     }
 
+    @Test func refreshWithoutRefreshTokenKeepsPreviousRefreshToken() async throws {
+        let access = makeJWT(["https://api.openai.com/auth": ["chatgpt_account_id": "account-123"]])
+        for provider in [ProviderID.claude, .codex, .kimi] {
+            let previous = OAuthTokens(
+                accessToken: "old-access", refreshToken: "kept-refresh", expiresAt: now,
+                accountID: provider == .codex ? "account-123" : nil
+            )
+            let body = try JSONSerialization.data(withJSONObject: ["access_token": access, "expires_in": 3600])
+            let transport = ScriptedOAuthTransport(responses: [.init(statusCode: 200, body: body)])
+            let refreshed = try await SubscriptionOAuthTokens.refresh(previous, provider: provider, transport: transport, now: now)
+            #expect(refreshed.accessToken == access)
+            #expect(refreshed.refreshToken == "kept-refresh")
+        }
+    }
+
+    @Test func signInWithoutRefreshTokenIsRejected() async throws {
+        let body = Data(#"{"access_token":"access","expires_in":3600}"#.utf8)
+        let pkce = try OAuthPKCE(verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+        await #expect(throws: OAuthError.invalidResponse) {
+            _ = try await ClaudeOAuth.exchange(
+                code: "code", state: "state", pkce: pkce,
+                transport: ScriptedOAuthTransport(responses: [.init(statusCode: 200, body: body)]), now: now
+            )
+        }
+        await #expect(throws: OAuthError.invalidResponse) {
+            _ = try await KimiOAuth.poll(
+                device: device(), transport: ScriptedOAuthTransport(responses: [.init(statusCode: 200, body: body)]),
+                now: { now }
+            ) { _ in }
+        }
+    }
+
+    @Test func codexRefreshForAnotherAccountRequiresNewSignIn() async throws {
+        let access = makeJWT(["https://api.openai.com/auth": ["chatgpt_account_id": "account-456"]])
+        let previous = OAuthTokens(
+            accessToken: "old-access", refreshToken: "old-refresh", expiresAt: now, accountID: "account-123"
+        )
+        let body = try JSONSerialization.data(withJSONObject: [
+            "access_token": access, "refresh_token": "new-refresh", "expires_in": 3600,
+        ])
+        let transport = ScriptedOAuthTransport(responses: [.init(statusCode: 200, body: body)])
+        await #expect(throws: OAuthError.unauthorized) {
+            _ = try await SubscriptionOAuthTokens.refresh(previous, provider: .codex, transport: transport, now: now)
+        }
+    }
+
+    @Test func codexRefreshWithoutAccountIDKeepsPreviousAccount() async throws {
+        let previous = OAuthTokens(
+            accessToken: "old-access", refreshToken: "old-refresh", expiresAt: now, accountID: "account-123"
+        )
+        let body = Data(#"{"access_token":"opaque-access","refresh_token":"new-refresh","expires_in":3600}"#.utf8)
+        let transport = ScriptedOAuthTransport(responses: [.init(statusCode: 200, body: body)])
+        let refreshed = try await SubscriptionOAuthTokens.refresh(previous, provider: .codex, transport: transport, now: now)
+        #expect(refreshed.accountID == "account-123")
+        #expect(refreshed.refreshToken == "new-refresh")
+    }
+
+    @Test func tokenErrorsArePermanentOnlyForRevocationCodes() async throws {
+        let cases: [(Int, String, OAuthError)] = [
+            (400, #"{"error":{"message":"private detail","type":"invalid_request_error","code":"refresh_token_reused"}}"#, .unauthorized),
+            (400, #"{"code":"refresh_token_expired"}"#, .unauthorized),
+            (400, #"{"error":"invalid_grant"}"#, .unauthorized),
+            (400, #"{"error":"invalid_client"}"#, .unauthorized),
+            (400, #"{"error":"unauthorized_client"}"#, .unauthorized),
+            (400, #"{"error":"unsupported_grant_type"}"#, .unauthorized),
+            (400, #"{"error":"invalid_scope"}"#, .unauthorized),
+            (401, "", .unauthorized),
+            (403, "", .unauthorized),
+            (400, #"{"error":"invalid_request"}"#, .unavailable),
+            (400, #"{"error":{"message":"private detail","code":"invalid_request"}}"#, .unavailable),
+            (429, "", .unavailable),
+            (503, "", .unavailable),
+        ]
+        for (status, body, expected) in cases {
+            let transport = ScriptedOAuthTransport(responses: [.init(statusCode: status, body: Data(body.utf8))])
+            await #expect(throws: expected) {
+                _ = try await CodexOAuth.refresh(refreshToken: "refresh", transport: transport, now: now)
+            }
+        }
+    }
+
+    @Test func tokenRequestsAreNotCutShortByTheTransport() async throws {
+        let transport = try #require(SubscriptionOAuthTokens.defaultTransport() as? URLSessionRemoteUsageTransport)
+        let scripted = ScriptedOAuthTransport(responses: [.init(statusCode: 503, body: Data())])
+        _ = try? await KimiOAuth.refresh(refreshToken: "refresh", transport: scripted, now: now)
+        let request = await scripted.onlyRequest()
+        #expect(request.timeoutInterval == SubscriptionOAuthTokens.requestTimeout)
+        #expect(transport.configuration.timeoutIntervalForResource >= request.timeoutInterval)
+        #expect(transport.configuration.timeoutIntervalForRequest >= request.timeoutInterval)
+    }
+
     @Test func kimiDeviceAuthorizationValidatesBrowserURLsAndDefaults() async throws {
         let body = Data(#"""
             {
