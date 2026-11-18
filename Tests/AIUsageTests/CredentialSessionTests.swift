@@ -1,0 +1,260 @@
+import Foundation
+import Testing
+import QuotaCore
+@testable import AIUsage
+
+@MainActor
+struct CredentialSessionTests {
+    private let id = ProviderID(rawValue: "credential-session-test")
+    private let account = URL(string: "https://example.invalid/account")!
+    private let snapshot = QuotaSnapshot(windows: [.init(id: "hour", title: "Hourly", remainingPercent: 70, resetAt: nil)], observedAt: .now)
+
+    @Test func renewalStartsAtTheLeadTimeAndNotEarlier() async throws {
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(OAuthTokens.refreshLeadTime + 1))
+        let renewed = tokens("renewed", expiresAt: clock.now.addingTimeInterval(7200))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: renewed)
+        let session = try session(initial, driver: driver, clock: clock)
+
+        #expect(try await session.access(for: provider(), interactive: false).oauthTokens() == initial)
+        #expect(driver.refreshCalls == 0)
+        clock.now = clock.now.addingTimeInterval(1)
+        #expect(try await session.access(for: provider(), interactive: false).oauthTokens() == renewed)
+        #expect(driver.refreshCalls == 1)
+    }
+
+    @Test func concurrentCallersShareOneRenewal() async throws {
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(60))
+        let renewed = tokens("renewed", expiresAt: clock.now.addingTimeInterval(7200))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: renewed)
+        let session = try session(initial, driver: driver, clock: clock)
+        let (started, release) = hold(driver)
+
+        let first = Task { try await session.access(for: provider(), interactive: false).oauthTokens() }
+        for await _ in started {}
+        let second = Task { try await session.access(for: provider(), interactive: false).oauthTokens() }
+        for _ in 0..<10 { await Task.yield() }
+        release.finish()
+
+        #expect(try await first.value == renewed)
+        #expect(try await second.value == renewed)
+        #expect(driver.refreshCalls == 1)
+    }
+
+    @Test func tenPollsReadTheVaultOnce() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let initial = tokens("initial", expiresAt: Date().addingTimeInterval(3600))
+        let vault = MemoryCredentialVault()
+        let store = UsageStore(
+            providers: [provider()], defaults: defaults, vault: vault,
+            oauth: StubOAuthDriver(loginTokens: initial, refreshedTokens: initial)
+        )
+        try await store.connect(id)
+
+        for _ in 0..<10 { await store.refresh(id) }
+
+        #expect(vault.reads == 1)
+        #expect(store.states[id]?.message == nil)
+    }
+
+    @Test func failedStoreKeepsRenewedTokensAndRetriesTheStore() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
+        let renewed = tokens("renewed", expiresAt: clock.now.addingTimeInterval(10_800))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: renewed)
+        let vault = MemoryCredentialVault()
+        let store = UsageStore(providers: [provider()], defaults: defaults, vault: vault, oauth: driver, now: { clock.now })
+        try await store.connect(id)
+        vault.failStores(with: VaultError.inaccessible)
+        clock.now = clock.now.addingTimeInterval(3600 - 60)
+
+        await store.refresh(id)
+        #expect(driver.refreshCalls == 1)
+        #expect(store.states[id]?.needsAuthentication == false)
+        #expect(store.states[id]?.message == UsageStore.unsavedSignIn)
+
+        let attempts = vault.storeAttempts
+        await store.refresh(id)
+        #expect(driver.refreshCalls == 1)
+        #expect(vault.storeAttempts == attempts + 1)
+        #expect(store.states[id]?.message == UsageStore.unsavedSignIn)
+
+        vault.failStores(with: nil)
+        await store.refresh(id)
+        #expect(driver.refreshCalls == 1)
+        #expect(vault.storedTokens(id) == renewed)
+        #expect(store.states[id]?.message == nil)
+    }
+
+    @Test func refusedRenewalStopsAutomaticPollsUntilManualRefreshOrSignIn() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: initial)
+        driver.refreshError = OAuthError.unauthorized
+        let reads = QuotaReadCounter()
+        let provider = provider { await reads.record() }
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: MemoryCredentialVault(), oauth: driver, now: { clock.now })
+        try await store.connect(id)
+        clock.now = clock.now.addingTimeInterval(3600 - 60)
+
+        await store.refresh(id)
+        #expect(driver.refreshCalls == 1)
+        #expect(store.states[id]?.needsAuthentication == true)
+        let readsAfterRefusal = await reads.count
+        await store.refresh(id)
+        await store.refresh(id)
+        #expect(driver.refreshCalls == 1)
+        #expect(await reads.count == readsAfterRefusal)
+
+        await store.refresh(id, interactive: true)
+        #expect(driver.refreshCalls == 2)
+
+        driver.refreshError = nil
+        driver.loginTokens = tokens("signed-in", expiresAt: clock.now.addingTimeInterval(3600))
+        try await store.connect(id)
+        #expect(store.states[id]?.needsAuthentication == false)
+        await store.refresh(id)
+        #expect(driver.refreshCalls == 2)
+        #expect(store.states[id]?.needsAuthentication == false)
+        #expect(store.states[id]?.message == nil)
+    }
+
+    @Test func temporaryRenewalFailureKeepsTokensAndRetriesAtTheNextPoll() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
+        let renewed = tokens("renewed", expiresAt: clock.now.addingTimeInterval(10_800))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: renewed)
+        driver.refreshError = OAuthError.unavailable
+        let vault = MemoryCredentialVault()
+        let store = UsageStore(providers: [provider()], defaults: defaults, vault: vault, oauth: driver, now: { clock.now })
+        try await store.connect(id)
+        clock.now = clock.now.addingTimeInterval(3600 - 60)
+
+        await store.refresh(id)
+        #expect(store.states[id]?.needsAuthentication == false)
+        #expect(store.states[id]?.message == CredentialSession.renewalFailure)
+        await store.refresh(id)
+        #expect(driver.refreshCalls == 2)
+
+        driver.refreshError = nil
+        await store.refresh(id)
+        #expect(driver.refreshCalls == 3)
+        #expect(driver.refreshedFrom.allSatisfy { $0 == initial })
+        #expect(vault.storedTokens(id) == renewed)
+        #expect(store.states[id]?.message == nil)
+    }
+
+    @Test func cancelledCallerDoesNotLoseRenewedTokens() async throws {
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(60))
+        let renewed = tokens("renewed", expiresAt: clock.now.addingTimeInterval(7200))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: renewed)
+        let vault = MemoryCredentialVault()
+        let session = try session(initial, driver: driver, clock: clock, vault: vault)
+        let (started, release) = hold(driver)
+
+        let caller = Task { try await session.access(for: provider(), interactive: false) }
+        for await _ in started {}
+        caller.cancel()
+        release.finish()
+        _ = await caller.result
+
+        #expect(try await session.access(for: provider(), interactive: false).oauthTokens() == renewed)
+        #expect(driver.refreshCalls == 1)
+        #expect(vault.storedTokens(id) == renewed)
+    }
+
+    @Test func disconnectDuringRenewalStoresNothing() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
+        let renewed = tokens("renewed", expiresAt: clock.now.addingTimeInterval(10_800))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: renewed)
+        let vault = MemoryCredentialVault()
+        let store = UsageStore(providers: [provider()], defaults: defaults, vault: vault, oauth: driver, now: { clock.now })
+        try await store.connect(id)
+        clock.now = clock.now.addingTimeInterval(3600 - 60)
+        let (started, release) = hold(driver)
+
+        let poll = Task { await store.refresh(id) }
+        for await _ in started {}
+        try await store.disconnect(id)
+        let attempts = vault.storeAttempts
+        release.finish()
+        await poll.value
+
+        #expect(vault.storeAttempts == attempts)
+        #expect(vault.storedTokens(id) == nil)
+        #expect(store.states[id]?.connected == false)
+    }
+
+    @Test func newerValidTokensInTheVaultReplaceANetworkRenewal() async throws {
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
+        let newer = tokens("other-instance", expiresAt: clock.now.addingTimeInterval(10_800))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: initial)
+        let vault = MemoryCredentialVault()
+        let session = try session(initial, driver: driver, clock: clock, vault: vault)
+        #expect(try await session.access(for: provider(), interactive: false).oauthTokens() == initial)
+        try vault.store(String(decoding: try JSONEncoder().encode(newer), as: UTF8.self), for: id)
+        clock.now = clock.now.addingTimeInterval(3600 - 60)
+
+        #expect(try await session.access(for: provider(), interactive: false).oauthTokens() == newer)
+        #expect(driver.refreshCalls == 0)
+    }
+
+    private func tokens(_ name: String, expiresAt: Date) -> OAuthTokens {
+        OAuthTokens(accessToken: "\(name)-access", refreshToken: "\(name)-refresh", expiresAt: expiresAt)
+    }
+
+    private func provider(onRead: @escaping @Sendable () async -> Void = {}) -> QuotaProvider {
+        let snapshot = snapshot
+        return QuotaProvider(id: id, displayName: "OAuth", accountURL: account, connection: .oauth, reset: .automaticOnly) { _ in
+            await onRead()
+            return snapshot
+        }
+    }
+
+    private func session(
+        _ tokens: OAuthTokens,
+        driver: StubOAuthDriver,
+        clock: OAuthClock,
+        vault: MemoryCredentialVault = MemoryCredentialVault()
+    ) throws -> CredentialSession {
+        let session = CredentialSession(vault: vault, oauth: driver, now: { clock.now })
+        try session.connect(.oauth(tokens), for: id)
+        return session
+    }
+
+    /// Suspends the next renewal: `started` ends when it begins, and `release.finish()` lets it complete.
+    /// A renewal that runs in a cancelled caller's task fails, because the hold checks for cancellation.
+    private func hold(_ driver: StubOAuthDriver) -> (started: AsyncStream<Void>, release: AsyncStream<Void>.Continuation) {
+        let started = AsyncStream.makeStream(of: Void.self)
+        let gate = AsyncStream.makeStream(of: Void.self)
+        driver.beforeRefresh = {
+            started.continuation.finish()
+            for await _ in gate.stream {}
+            try Task.checkCancellation()
+        }
+        return (started.stream, gate.continuation)
+    }
+
+    private func preferences() -> (UserDefaults, String) {
+        let suite = "CredentialSessionTests.\(UUID().uuidString)"
+        return (UserDefaults(suiteName: suite)!, suite)
+    }
+}
+
+private actor QuotaReadCounter {
+    private(set) var count = 0
+    func record() { count += 1 }
+}

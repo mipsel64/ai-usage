@@ -87,7 +87,7 @@ struct AccountIdentityStoreTests {
         await store.refresh(id)
         #expect(store.states[id]?.account == identity)
         #expect(await reads.count == 1)
-        #expect(vault.interactions == [false, false, false])
+        #expect(vault.interactions == [false])
     }
 
     @Test func failedCredentialReadDoesNotConsumeIdentityAttempt() async throws {

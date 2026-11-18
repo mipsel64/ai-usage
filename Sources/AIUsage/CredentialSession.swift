@@ -1,0 +1,160 @@
+import Foundation
+import QuotaCore
+
+/// The only reader and writer of stored credentials: keeps them in memory for the launch and renews OAuth tokens.
+@MainActor
+final class CredentialSession {
+    static let renewalFailure = "Cannot renew the sign-in now. AI Usage tries again at the next refresh."
+
+    private let vault: any CredentialVaulting
+    private let oauth: any SubscriptionOAuthDriving
+    private let now: () -> Date
+    private var cache: [ProviderID: ProviderAccess] = [:]
+    private var renewals: [ProviderID: (id: UUID, task: Task<OAuthTokens, any Error>)] = [:]
+    private var connections: [ProviderID: UUID] = [:]
+    /// Providers whose renewed tokens are only in memory because the vault did not store them.
+    private(set) var unsaved: Set<ProviderID> = []
+    /// Providers whose refresh token the provider refused; only an interactive use tries again.
+    private(set) var refused: Set<ProviderID> = []
+
+    init(vault: any CredentialVaulting, oauth: any SubscriptionOAuthDriving, now: @escaping () -> Date) {
+        self.vault = vault
+        self.oauth = oauth
+        self.now = now
+    }
+
+    /// Stores the credential of a new connection and discards everything from the previous one.
+    func connect(_ access: ProviderAccess, for id: ProviderID) throws {
+        let value: String
+        switch access {
+        case let .apiKey(key): value = key
+        case let .oauth(tokens): value = try Self.encode(tokens)
+        case .executable: throw QuotaError.notConfigured
+        }
+        try vault.store(value, for: id)
+        discard(id)
+    }
+
+    func disconnect(_ id: ProviderID) throws {
+        try vault.remove(id)
+        discard(id)
+    }
+
+    /// Returns the stored credential and renews OAuth tokens inside the renewal lead time.
+    func access(for provider: QuotaProvider, interactive: Bool) async throws -> ProviderAccess {
+        let id = provider.id
+        if refused.contains(id) {
+            guard interactive else { throw OAuthError.unauthorized }
+            refused.remove(id)
+        }
+        let access = try await cached(provider, interactive: interactive)
+        retrySave(id)
+        guard case let .oauth(tokens) = access, tokens.needsRefresh(at: now()) else { return access }
+        return .oauth(try await renew(tokens, for: id))
+    }
+
+    /// Runs `operation`, and after a 401 runs it once more with renewed OAuth tokens.
+    func withRenewal<T>(
+        _ access: ProviderAccess,
+        for id: ProviderID,
+        _ operation: (ProviderAccess) async throws -> T
+    ) async throws -> (value: T, access: ProviderAccess) {
+        do {
+            return (try await operation(access), access)
+        } catch QuotaError.unauthorized {
+            guard case let .oauth(rejected) = access, case let .oauth(current)? = cache[id] else {
+                throw QuotaError.unauthorized
+            }
+            let tokens = if current == rejected { try await renew(rejected, for: id) } else { current }
+            let renewed = ProviderAccess.oauth(tokens)
+            return (try await operation(renewed), renewed)
+        }
+    }
+
+    private func cached(_ provider: QuotaProvider, interactive: Bool) async throws -> ProviderAccess {
+        let id = provider.id
+        if let access = cache[id] { return access }
+        let connection = connections[id]
+        let value = try await vault.read(id, interactive: interactive)
+        guard connection == connections[id] else { throw QuotaError.unavailable }
+        if let access = cache[id] { return access }
+        let access: ProviderAccess
+        if case .oauth = provider.connection {
+            guard let tokens = Self.decode(value) else { throw QuotaError.notConfigured }
+            access = .oauth(tokens)
+        } else {
+            access = .apiKey(value)
+        }
+        cache[id] = access
+        return access
+    }
+
+    /// Concurrent callers share one renewal; it runs in its own task, so a cancelled caller does not lose it.
+    private func renew(_ tokens: OAuthTokens, for id: ProviderID) async throws -> OAuthTokens {
+        if let renewal = renewals[id] { return try await renewal.task.value }
+        let renewalID = UUID()
+        let task = Task { try await self.performRenewal(of: tokens, for: id, renewalID: renewalID) }
+        renewals[id] = (renewalID, task)
+        return try await task.value
+    }
+
+    private func performRenewal(of tokens: OAuthTokens, for id: ProviderID, renewalID: UUID) async throws -> OAuthTokens {
+        defer { if renewals[id]?.id == renewalID { renewals[id] = nil } }
+        // shortcut: two app instances can still renew at the same time, add a file lock if that occurs.
+        // Unsaved tokens in memory are newer than the vault, so the vault cannot replace them.
+        let stored = unsaved.contains(id) ? nil : await storedTokens(id)
+        guard renewals[id]?.id == renewalID else { throw QuotaError.unavailable }
+        if let stored, stored != tokens, !stored.needsRefresh(at: now()) {
+            cache[id] = .oauth(stored)
+            return stored
+        }
+        let renewed: OAuthTokens
+        do {
+            renewed = try await oauth.refresh(tokens, for: id).validated()
+        } catch OAuthError.unauthorized {
+            if renewals[id]?.id == renewalID { refused.insert(id) }
+            throw OAuthError.unauthorized
+        } catch {
+            throw ActionError(Self.renewalFailure)
+        }
+        guard renewals[id]?.id == renewalID else { throw QuotaError.unavailable }
+        // The provider rotated the refresh token, so memory keeps the new one even if the vault refuses it.
+        cache[id] = .oauth(renewed)
+        unsaved.insert(id)
+        retrySave(id)
+        return renewed
+    }
+
+    private func storedTokens(_ id: ProviderID) async -> OAuthTokens? {
+        guard let value = try? await vault.read(id, interactive: false) else { return nil }
+        return Self.decode(value)
+    }
+
+    private func retrySave(_ id: ProviderID) {
+        guard unsaved.contains(id), case let .oauth(tokens)? = cache[id],
+              let value = try? Self.encode(tokens), (try? vault.store(value, for: id)) != nil else { return }
+        unsaved.remove(id)
+    }
+
+    private func discard(_ id: ProviderID) {
+        connections[id] = UUID()
+        cache[id] = nil
+        renewals[id] = nil
+        unsaved.remove(id)
+        refused.remove(id)
+    }
+
+    private static func decode(_ value: String) -> OAuthTokens? {
+        guard let data = value.data(using: .utf8),
+              let tokens = try? JSONDecoder().decode(OAuthTokens.self, from: data) else { return nil }
+        return try? tokens.validated()
+    }
+
+    private static func encode(_ tokens: OAuthTokens) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(tokens)
+        guard let value = String(data: data, encoding: .utf8) else { throw VaultError.inaccessible }
+        return value
+    }
+}

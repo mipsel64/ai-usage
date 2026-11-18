@@ -160,11 +160,13 @@ private actor OAuthRedemptionRecorder {
 }
 
 @MainActor
-private final class StubOAuthDriver: SubscriptionOAuthDriving {
-    let loginTokens: OAuthTokens
+final class StubOAuthDriver: SubscriptionOAuthDriving {
+    var loginTokens: OAuthTokens
     let refreshedTokens: OAuthTokens
     var refreshError: Error?
     var refreshCalls = 0
+    var refreshedFrom: [OAuthTokens] = []
+    var beforeRefresh: (() async throws -> Void)?
 
     init(loginTokens: OAuthTokens, refreshedTokens: OAuthTokens) {
         self.loginTokens = loginTokens
@@ -175,27 +177,48 @@ private final class StubOAuthDriver: SubscriptionOAuthDriving {
 
     func refresh(_ tokens: OAuthTokens, for id: ProviderID) async throws -> OAuthTokens {
         refreshCalls += 1
+        refreshedFrom.append(tokens)
+        try await beforeRefresh?()
         if let refreshError { throw refreshError }
         return refreshedTokens
     }
 }
 
 @MainActor
-private final class OAuthClock {
+final class OAuthClock {
     var now: Date
     init(now: Date) { self.now = now }
 }
 
-private final class MemoryCredentialVault: CredentialVaulting, @unchecked Sendable {
+final class MemoryCredentialVault: CredentialVaulting, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [ProviderID: String] = [:]
+    private var readCount = 0
+    private var storeCount = 0
+    private var storeError: (any Error)?
+
+    var reads: Int { withLock { readCount } }
+    var storeAttempts: Int { withLock { storeCount } }
+
+    func failStores(with error: (any Error)?) {
+        withLock { storeError = error }
+    }
+
+    func storedTokens(_ id: ProviderID) -> OAuthTokens? {
+        withLock { values[id] }.flatMap { try? JSONDecoder().decode(OAuthTokens.self, from: Data($0.utf8)) }
+    }
 
     func store(_ value: String, for id: ProviderID) throws {
-        withLock { values[id] = value }
+        try withLock {
+            storeCount += 1
+            if let storeError { throw storeError }
+            values[id] = value
+        }
     }
 
     func read(_ id: ProviderID, interactive: Bool) async throws -> String {
         try withLock {
+            readCount += 1
             guard let value = values[id] else { throw QuotaError.notConfigured }
             return value
         }

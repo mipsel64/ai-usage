@@ -30,7 +30,10 @@ public struct OAuthTokens: Codable, Equatable, Sendable {
         return self
     }
 
-    public func needsRefresh(at now: Date, leeway: TimeInterval = 60) -> Bool {
+    /// Renew this long before expiry, so a poll every minute renews in time even after a few failed attempts.
+    public static let refreshLeadTime: TimeInterval = 5 * 60
+
+    public func needsRefresh(at now: Date, leeway: TimeInterval = refreshLeadTime) -> Bool {
         expiresAt.timeIntervalSince(now) <= leeway
     }
 
@@ -123,7 +126,7 @@ public struct KimiDeviceAuthorization: Sendable {
 
 private struct OAuthTokenPayload: Decodable {
     let accessToken: String
-    let refreshToken: String
+    let refreshToken: String?
     let idToken: String?
     let expiresIn: Double?
 
@@ -195,7 +198,9 @@ private enum OAuthRequest {
 private func decodeToken(
     _ body: Data,
     provider: ProviderID,
-    now: Date
+    now: Date,
+    previousRefreshToken: String? = nil,
+    previousAccountID: String? = nil
 ) throws -> OAuthTokens {
     let payload: OAuthTokenPayload
     do {
@@ -213,10 +218,12 @@ private func decodeToken(
     } else {
         throw OAuthError.invalidResponse
     }
+    // RFC 6749 section 6: a refresh response can omit refresh_token; the client then keeps its own.
+    guard let refreshToken = payload.refreshToken ?? previousRefreshToken else { throw OAuthError.invalidResponse }
 
     let accountID: String?
     if provider == .codex {
-        accountID = payload.idToken.flatMap(chatGPTAccountID) ?? chatGPTAccountID(payload.accessToken)
+        accountID = payload.idToken.flatMap(chatGPTAccountID) ?? chatGPTAccountID(payload.accessToken) ?? previousAccountID
         guard accountID != nil else { throw OAuthError.invalidResponse }
     } else {
         accountID = nil
@@ -232,7 +239,7 @@ private func decodeToken(
     do {
         return try OAuthTokens(
             accessToken: payload.accessToken,
-            refreshToken: payload.refreshToken,
+            refreshToken: refreshToken,
             expiresAt: now.addingTimeInterval(expiresIn),
             accountID: accountID,
             idToken: displayIDToken
@@ -242,15 +249,27 @@ private func decodeToken(
     }
 }
 
+/// The codes that the official Codex client and the OpenAI documentation treat as a spent or revoked sign-in.
+private let permanentTokenErrors: Set<String> = [
+    "invalid_grant", "invalid_refresh_token", "token_expired",
+    "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused",
+]
+
 private func checkTokenStatus(_ status: Int?, body: Data) throws {
     guard let status else { throw OAuthError.unavailable }
     if (200 ... 299).contains(status) { return }
-    let payload = try? JSONDecoder().decode(OAuthErrorPayload.self, from: body)
-    if status == 400 || status == 401 || status == 403 || payload?.error == "invalid_grant" {
+    if status == 401 || status == 403 || tokenErrorCode(body).map(permanentTokenErrors.contains) == true {
         throw OAuthError.unauthorized
     }
-    if status == 429 || status >= 500 { throw OAuthError.unavailable }
     throw OAuthError.unavailable
+}
+
+/// Reads `error` as a string, `error.code` when `error` is an object, or a top-level `code`.
+private func tokenErrorCode(_ body: Data) -> String? {
+    guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return nil }
+    if let code = object["error"] as? String { return code }
+    if let error = object["error"] as? [String: Any], let code = error["code"] as? String { return code }
+    return object["code"] as? String
 }
 
 private func chatGPTAccountID(_ jwt: String) -> String? {
@@ -372,7 +391,7 @@ public enum ClaudeOAuth {
         ])
         let response = try await RemoteUsage.response(for: request, transport: transport)
         try checkTokenStatus(response.statusCode, body: response.body)
-        return try decodeToken(response.body, provider: .claude, now: now)
+        return try decodeToken(response.body, provider: .claude, now: now, previousRefreshToken: refreshToken)
     }
 }
 
@@ -424,6 +443,7 @@ public enum CodexOAuth {
 
     public static func refresh(
         refreshToken: String,
+        previousAccountID: String? = nil,
         transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
@@ -434,7 +454,10 @@ public enum CodexOAuth {
         ])
         let response = try await RemoteUsage.response(for: request, transport: transport)
         try checkTokenStatus(response.statusCode, body: response.body)
-        return try decodeToken(response.body, provider: .codex, now: now)
+        return try decodeToken(
+            response.body, provider: .codex, now: now,
+            previousRefreshToken: refreshToken, previousAccountID: previousAccountID
+        )
     }
 }
 
@@ -536,7 +559,7 @@ public enum KimiOAuth {
         ])
         let response = try await RemoteUsage.response(for: request, transport: transport)
         try checkTokenStatus(response.statusCode, body: response.body)
-        return try decodeToken(response.body, provider: .kimi, now: now)
+        return try decodeToken(response.body, provider: .kimi, now: now, previousRefreshToken: refreshToken)
     }
 
     private static func decodeDevice(_ body: Data) throws -> KimiDeviceAuthorization {
@@ -600,8 +623,12 @@ public enum SubscriptionOAuthTokens {
             return try await ClaudeOAuth.refresh(refreshToken: tokens.refreshToken, transport: transport, now: now)
         case .codex:
             let refreshed = try await CodexOAuth.refresh(
-                refreshToken: tokens.refreshToken, transport: transport, now: now
+                refreshToken: tokens.refreshToken, previousAccountID: tokens.accountID, transport: transport, now: now
             )
+            // A different account means that the stored sign-in is no longer the one that the user connected.
+            if let previousAccount = tokens.accountID, refreshed.accountID != previousAccount {
+                throw OAuthError.unauthorized
+            }
             guard refreshed.idToken == nil, let previousIDToken = tokens.idToken,
                   refreshed.accountID == tokens.accountID else { return refreshed }
             return try OAuthTokens(
