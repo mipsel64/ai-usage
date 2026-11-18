@@ -9,6 +9,7 @@ struct ProviderState {
     var message: String?
     var loading = false
     var needsAuthentication = false
+    var account: AccountIdentity?
 }
 
 struct ActionError: LocalizedError {
