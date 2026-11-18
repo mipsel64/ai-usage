@@ -208,6 +208,133 @@ struct CredentialSessionTests {
         #expect(store.states[id]?.needsAuthentication == true)
     }
 
+    @Test func failedForcedRenewalsAlsoPauseForTheLeadTime() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: initial)
+        driver.refreshError = OAuthError.unavailable
+        let reads = QuotaReadCounter()
+        let store = UsageStore(
+            providers: [provider { try await reads.record() }], defaults: defaults, vault: MemoryCredentialVault(),
+            oauth: driver, now: { clock.now }
+        )
+        try await store.connect(id)
+        await reads.rejectReads()
+
+        for _ in 0..<3 {
+            await store.refresh(id)
+            clock.now = clock.now.addingTimeInterval(60)
+        }
+
+        #expect(driver.refreshCalls == 1)
+        #expect(store.states[id]?.needsAuthentication == true)
+    }
+
+    @Test func reconnectDuringAWriteDoesNotRepeatItWithTheNewConnection() async throws {
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
+        let replacement = tokens("replacement", expiresAt: clock.now.addingTimeInterval(3600))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: initial)
+        let session = try session(initial, driver: driver, clock: clock)
+        let access = try await session.access(for: provider(), interactive: true)
+        let started = AsyncStream.makeStream(of: Void.self)
+        let gate = AsyncStream.makeStream(of: Void.self)
+        let writes = QuotaReadCounter()
+
+        let write = Task {
+            try await session.withRenewal(access, for: id) { (_: ProviderAccess) async throws -> Redemption in
+                try await writes.record()
+                started.continuation.finish()
+                for await _ in gate.stream {}
+                throw QuotaError.unauthorized
+            }
+        }
+        for await _ in started.stream {}
+        try session.connect(.oauth(replacement), for: id)
+        #expect(try await session.access(for: provider(), interactive: false).oauthTokens() == replacement)
+        gate.continuation.finish()
+
+        await #expect(throws: QuotaError.unavailable) { try await write.value }
+        #expect(await writes.count == 1)
+        #expect(driver.refreshCalls == 0)
+    }
+
+    @Test func bankedResetRetriesTheWriteOnceWithTheSameKeyAfterARejectedToken() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let initial = tokens("initial", expiresAt: Date().addingTimeInterval(3600))
+        let renewed = tokens("renewed", expiresAt: Date().addingTimeInterval(10_800))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: renewed)
+        let consumer = ResetConsumer([.failure(.unauthorized), .success(.reset)])
+        let store = UsageStore(providers: [bankedProvider(consumer)], defaults: defaults, vault: MemoryCredentialVault(), oauth: driver)
+        try await store.connect(id)
+
+        #expect(try await store.redeemReset(id, creditID: "credit") == "The provider confirmed the reset.")
+
+        let calls = await consumer.calls
+        #expect(driver.refreshCalls == 1)
+        #expect(calls.map(\.token) == [initial.accessToken, renewed.accessToken])
+        #expect(calls.map(\.credit) == ["credit", "credit"])
+        #expect(calls.count == 2 && calls[0].key == calls[1].key)
+    }
+
+    @Test func bankedResetWithAnUnknownResultIsNeitherRenewedNorRepeated() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let initial = tokens("initial", expiresAt: Date().addingTimeInterval(3600))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: initial)
+        let consumer = ResetConsumer([.failure(.unavailable), .success(.reset)])
+        let store = UsageStore(providers: [bankedProvider(consumer)], defaults: defaults, vault: MemoryCredentialVault(), oauth: driver)
+        try await store.connect(id)
+
+        await #expect(throws: ActionError.self) { try await store.redeemReset(id, creditID: "credit") }
+
+        #expect(await consumer.calls.count == 1)
+        #expect(driver.refreshCalls == 0)
+        #expect(store.states[id]?.message == "Reset result unknown. Check the provider’s usage page before trying again.")
+    }
+
+    @Test func renewalUsesNewerStoredTokensInsideTheLeadTime() async throws {
+        let clock = OAuthClock(now: Date())
+        let memory = tokens("memory", expiresAt: clock.now.addingTimeInterval(3600))
+        let stored = tokens("other-instance", expiresAt: clock.now.addingTimeInterval(3700))
+        let renewed = tokens("renewed", expiresAt: clock.now.addingTimeInterval(10_800))
+        let driver = StubOAuthDriver(loginTokens: memory, refreshedTokens: renewed)
+        let vault = MemoryCredentialVault()
+        let session = try session(memory, driver: driver, clock: clock, vault: vault)
+        #expect(try await session.access(for: provider(), interactive: false).oauthTokens() == memory)
+        try vault.store(String(decoding: try JSONEncoder().encode(stored), as: UTF8.self), for: id)
+        clock.now = clock.now.addingTimeInterval(3600 - 60)
+
+        #expect(try await session.access(for: provider(), interactive: false).oauthTokens() == renewed)
+        #expect(driver.refreshedFrom == [stored])
+    }
+
+    @Test func deletedCredentialStopsTheRenewal() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: tokens("renewed", expiresAt: clock.now.addingTimeInterval(10_800)))
+        let vault = MemoryCredentialVault()
+        let store = UsageStore(providers: [provider()], defaults: defaults, vault: vault, oauth: driver, now: { clock.now })
+        try await store.connect(id)
+        await store.refresh(id)
+        try vault.remove(id)
+        let attempts = vault.storeAttempts
+        clock.now = clock.now.addingTimeInterval(3600 - 60)
+
+        await store.refresh(id)
+        await store.refresh(id)
+
+        #expect(driver.refreshCalls == 0)
+        #expect(vault.storeAttempts == attempts)
+        #expect(vault.storedTokens(id) == nil)
+        #expect(store.states[id]?.needsAuthentication == true)
+    }
+
     @Test func cancelledCallerDoesNotLoseRenewedTokens() async throws {
         let clock = OAuthClock(now: Date())
         let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(60))
@@ -280,6 +407,18 @@ struct CredentialSessionTests {
         }
     }
 
+    private func bankedProvider(_ consumer: ResetConsumer) -> QuotaProvider {
+        let snapshot = QuotaSnapshot(
+            windows: [.init(id: "week", title: "Weekly", remainingPercent: 0, resetAt: nil)],
+            observedAt: .now,
+            resetCredits: ResetCredits(availableCount: 1, nextID: "credit", nextTitle: "Weekly reset", nextExpiry: nil)
+        )
+        return QuotaProvider(
+            id: id, displayName: "OAuth", accountURL: account, connection: .oauth,
+            reset: .banked(website: account) { access, credit, key in try await consumer.consume(access, credit, key) }
+        ) { _ in snapshot }
+    }
+
     private func session(
         _ tokens: OAuthTokens,
         driver: StubOAuthDriver,
@@ -318,4 +457,14 @@ private actor QuotaReadCounter {
         if rejecting { throw QuotaError.unauthorized }
     }
     func rejectReads() { rejecting = true }
+}
+
+private actor ResetConsumer {
+    private var outcomes: [Result<Redemption, QuotaError>]
+    private(set) var calls: [(token: String, credit: String, key: String)] = []
+    init(_ outcomes: [Result<Redemption, QuotaError>]) { self.outcomes = outcomes }
+    func consume(_ access: ProviderAccess, _ credit: String, _ key: String) throws -> Redemption {
+        calls.append((try access.oauthTokens().accessToken, credit, key))
+        return try outcomes.removeFirst().get()
+    }
 }

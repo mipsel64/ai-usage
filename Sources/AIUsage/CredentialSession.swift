@@ -16,7 +16,7 @@ final class CredentialSession {
     private(set) var unsaved: Set<ProviderID> = []
     /// Providers whose refresh token the provider refused; only an interactive use tries again.
     private(set) var refused: Set<ProviderID> = []
-    /// When a renewal after a 401 last completed; a provider that rejects fresh tokens gets no renewal storm.
+    /// When a renewal after a 401 last started; a provider that rejects fresh tokens gets no renewal storm.
     private var forcedRenewals: [ProviderID: Date] = [:]
 
     init(vault: any CredentialVaulting, oauth: any SubscriptionOAuthDriving, now: @escaping () -> Date) {
@@ -69,9 +69,12 @@ final class CredentialSession {
         for id: ProviderID,
         _ operation: (ProviderAccess) async throws -> T
     ) async throws -> (value: T, access: ProviderAccess) {
+        let connection = connections[id]
         do {
             return (try await operation(access), access)
         } catch QuotaError.unauthorized {
+            // Never run the operation again with the tokens of a different connection.
+            guard connection == connections[id] else { throw QuotaError.unavailable }
             guard case let .oauth(rejected) = access, case let .oauth(current)? = cache[id] else {
                 throw QuotaError.unauthorized
             }
@@ -80,9 +83,9 @@ final class CredentialSession {
                 if let last = forcedRenewals[id], now().timeIntervalSince(last) < OAuthTokens.refreshLeadTime {
                     throw QuotaError.unauthorized
                 }
-                let connection = connections[id]
+                forcedRenewals[id] = now()
                 tokens = try await renew(rejected, for: id)
-                if connection == connections[id] { forcedRenewals[id] = now() }
+                guard connection == connections[id] else { throw QuotaError.unavailable }
             } else {
                 tokens = current
             }
@@ -118,15 +121,27 @@ final class CredentialSession {
         return try await task.value
     }
 
-    private func performRenewal(of tokens: OAuthTokens, for id: ProviderID, renewalID: UUID) async throws -> OAuthTokens {
+    private func performRenewal(of current: OAuthTokens, for id: ProviderID, renewalID: UUID) async throws -> OAuthTokens {
         defer { if renewals[id]?.id == renewalID { renewals[id] = nil } }
         // shortcut: two app instances can still renew at the same time, add a file lock if that occurs.
+        var tokens = current
         // Unsaved tokens in memory are newer than the vault, so the vault cannot replace them.
-        let stored = unsaved.contains(id) ? nil : await storedTokens(id)
-        guard renewals[id]?.id == renewalID else { throw QuotaError.unavailable }
-        if let stored, stored != tokens, !stored.needsRefresh(at: now()) {
-            cache[id] = .oauth(stored)
-            return stored
+        if !unsaved.contains(id) {
+            let stored: OAuthTokens?
+            do {
+                stored = try await storedTokens(id)
+            } catch {
+                // The credential was deleted: do not renew it and do not write it back.
+                if renewals[id]?.id == renewalID { cache[id] = nil }
+                throw error
+            }
+            guard renewals[id]?.id == renewalID else { throw QuotaError.unavailable }
+            // Different stored tokens come from another app instance, which has already spent the refresh token in memory.
+            if let stored, stored != tokens {
+                cache[id] = .oauth(stored)
+                if !stored.needsRefresh(at: now()) { return stored }
+                tokens = stored
+            }
         }
         let renewed: OAuthTokens
         do {
@@ -145,9 +160,15 @@ final class CredentialSession {
         return renewed
     }
 
-    private func storedTokens(_ id: ProviderID) async -> OAuthTokens? {
-        guard let value = try? await vault.read(id, interactive: false) else { return nil }
-        return Self.decode(value)
+    /// Throws `QuotaError.notConfigured` when no credential is stored; returns nil when the vault cannot be read.
+    private func storedTokens(_ id: ProviderID) async throws -> OAuthTokens? {
+        do {
+            return Self.decode(try await vault.read(id, interactive: false))
+        } catch QuotaError.notConfigured {
+            throw QuotaError.notConfigured
+        } catch {
+            return nil
+        }
     }
 
     private func retrySave(_ id: ProviderID) {
