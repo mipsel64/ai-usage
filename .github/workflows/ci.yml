@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS build and test
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check Xcode build
+        run: test "$(xcodebuild -version | tail -1)" = 'Build version 17F42'
+      - name: Test providers and reset handling
+        run: swift test --disable-xctest
+      - name: Build and verify the app bundle
+        run: |
+          make app
+          plutil -lint '.build/AI Usage.app/Contents/Info.plist'
+          codesign --verify --deep --strict '.build/AI Usage.app'
