@@ -46,7 +46,7 @@ struct ProviderConnectionSection: View {
             case .apiKey:
                 APIKeyConnectionSetup(provider: provider, secret: $secret)
             case .oauth, .browserLogin:
-                BrowserConnectionSetup(provider: provider, state: state)
+                EmptyView()
             }
 
             if let message, !message.isEmpty {
