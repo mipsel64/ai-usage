@@ -12,7 +12,6 @@ struct OAuthLifecycleTests {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(true, forKey: "connected.\(id.rawValue)")
-        defaults.set(true, forKey: "desktopFeed.\(id.rawValue)")
         let provider = QuotaProvider(id: id, displayName: "OAuth", accountURL: account, connection: .oauth, reset: .automaticOnly) { _ in
             throw QuotaError.notConfigured
         }
