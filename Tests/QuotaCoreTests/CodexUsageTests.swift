@@ -72,6 +72,63 @@ struct CodexUsageTests {
         #expect(snapshot.resetCredits == nil)
     }
 
+    @Test func namesWindowsFromTheirReportedLength() async throws {
+        let session = FakeCodexSession(messages: [
+            response(id: 1, result: [:]),
+            response(id: 2, result: usageResult(
+                legacy: bucket(used: 0),
+                buckets: [
+                    "codex": bucket(used: 10, secondary: window(used: 20, reset: nil, minutes: 10_080)),
+                    "codex_spark": bucket(id: "codex_spark", name: "GPT-5.3-Codex-Spark", used: 30, minutes: 10_080),
+                ]
+            )),
+        ])
+
+        let snapshot = try await fetch(session: session)
+
+        #expect(snapshot.windows.map(\.id) == ["codex.primary", "codex.secondary", "codex_spark.primary"])
+        #expect(snapshot.windows.map(\.title) == ["5-hour", "Weekly", "Weekly GPT-5.3-Codex-Spark"])
+    }
+
+    @Test(arguments: [
+        (10_080, "Weekly"), (43_200, "Monthly"), (206, "Codex Primary"), (0, "Codex Primary"), (nil, "Codex Primary"),
+    ] as [(Int?, String)])
+    func namesMainBucketWithOnlyPrimaryWindow(minutes: Int?, title: String) async throws {
+        let session = FakeCodexSession(messages: [
+            response(id: 1, result: [:]),
+            response(id: 2, result: ["rateLimits": bucket(used: 0, minutes: minutes)]),
+        ])
+
+        let snapshot = try await fetch(session: session)
+
+        #expect(snapshot.windows.map(\.id) == ["codex.primary"])
+        #expect(snapshot.windows.map(\.title) == [title])
+    }
+
+    @Test func keepsReadingWithMalformedLength() async throws {
+        let session = FakeCodexSession(messages: [
+            response(id: 1, result: [:]),
+            response(id: 2, result: ["rateLimits": bucket(used: 25, minutes: "300")]),
+        ])
+
+        let snapshot = try await fetch(session: session)
+
+        #expect(snapshot.windows.map(\.title) == ["Codex Primary"])
+        #expect(snapshot.windows.map(\.remainingPercent) == [75])
+    }
+
+    @Test(arguments: [
+        (18_000, "5-hour"), (3_600, "1-hour"), (86_400, "24-hour"), (604_800, "Weekly"), (2_592_000, "Monthly"),
+        (90_000, nil), (12_345, nil), (1_800, nil), (0, nil), (-18_000, nil), (.infinity, nil), (.nan, nil),
+    ] as [(Double, String?)])
+    func labelsWindowLength(seconds: Double, label: String?) {
+        #expect(windowLengthLabel(seconds: seconds) == label)
+    }
+
+    @Test func absentLengthHasNoLabel() {
+        #expect(windowLengthLabel(seconds: nil) == nil)
+    }
+
     @Test(arguments: [-1.0, 100.1])
     func rejectsOutOfRangeUsage(usedPercent: Double) async {
         let session = FakeCodexSession(messages: [
@@ -331,22 +388,21 @@ struct CodexUsageTests {
         name: String? = nil,
         used: Double,
         reset: Double? = nil,
+        minutes: Any? = 300,
         secondary: [String: Any]? = nil
     ) -> [String: Any] {
         var result: [String: Any] = [
             "limitId": id,
-            "primary": window(used: used, reset: reset),
+            "primary": window(used: used, reset: reset, minutes: minutes),
         ]
         if let name { result["limitName"] = name }
         if let secondary { result["secondary"] = secondary }
         return result
     }
 
-    private func window(used: Double, reset: Double?) -> [String: Any] {
-        var result: [String: Any] = [
-            "usedPercent": used,
-            "windowDurationMins": 300,
-        ]
+    private func window(used: Double, reset: Double?, minutes: Any? = 300) -> [String: Any] {
+        var result: [String: Any] = ["usedPercent": used]
+        if let minutes { result["windowDurationMins"] = minutes }
         if let reset { result["resetsAt"] = reset }
         return result
     }

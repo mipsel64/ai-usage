@@ -134,12 +134,12 @@ public enum CodexRemoteUsage {
             if let primary = bucket.primaryWindow {
                 let windowID = "\(id).primary"
                 guard identifiers.insert(windowID).inserted else { throw QuotaError.invalidResponse }
-                windows.append(try primary.window(id: windowID, title: "\(title) Primary"))
+                windows.append(try primary.window(id: windowID, title: codexWindowTitle(bucket: title, slot: "Primary", seconds: primary.limitWindowSeconds)))
             }
             if let secondary = bucket.secondaryWindow {
                 let windowID = "\(id).secondary"
                 guard identifiers.insert(windowID).inserted else { throw QuotaError.invalidResponse }
-                windows.append(try secondary.window(id: windowID, title: "\(title) Secondary"))
+                windows.append(try secondary.window(id: windowID, title: codexWindowTitle(bucket: title, slot: "Secondary", seconds: secondary.limitWindowSeconds)))
             }
         }
         guard !windows.isEmpty else { throw QuotaError.invalidResponse }
@@ -191,11 +191,21 @@ private struct CodexRateBucket: Decodable {
 
 private struct CodexRateWindow: Decodable {
     let usedPercent: Double
+    let limitWindowSeconds: Double?
     let resetAt: Double?
 
     enum CodingKeys: String, CodingKey {
         case usedPercent = "used_percent"
+        case limitWindowSeconds = "limit_window_seconds"
         case resetAt = "reset_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        usedPercent = try container.decode(Double.self, forKey: .usedPercent)
+        // The length only names the window, so a malformed length must not reject the reading.
+        limitWindowSeconds = try? container.decodeIfPresent(Double.self, forKey: .limitWindowSeconds)
+        resetAt = try container.decodeIfPresent(Double.self, forKey: .resetAt)
     }
 
     func window(id: String, title: String) throws -> QuotaWindow {

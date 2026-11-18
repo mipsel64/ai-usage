@@ -22,9 +22,9 @@ struct SubscriptionRemoteUsageTests {
         #expect(request.httpShouldHandleCookies == false)
         #expect(snapshot.observedAt == observedAt)
         #expect(snapshot.windows == [
-            QuotaWindow(id: "five_hour", title: "5-hour limit", remainingPercent: 75, resetAt: Date(timeIntervalSince1970: 1_800_000_000.123)),
-            QuotaWindow(id: "seven_day", title: "Weekly limit", remainingPercent: 40, resetAt: nil),
-            QuotaWindow(id: "seven_day_sonnet", title: "Weekly Sonnet limit", remainingPercent: 87.5, resetAt: Date(timeIntervalSince1970: 1_800_000_000)),
+            QuotaWindow(id: "five_hour", title: "5-hour", remainingPercent: 75, resetAt: Date(timeIntervalSince1970: 1_800_000_000.123)),
+            QuotaWindow(id: "seven_day", title: "Weekly", remainingPercent: 40, resetAt: nil),
+            QuotaWindow(id: "seven_day_sonnet", title: "Weekly Sonnet", remainingPercent: 87.5, resetAt: Date(timeIntervalSince1970: 1_800_000_000)),
         ])
     }
 
@@ -33,9 +33,9 @@ struct SubscriptionRemoteUsageTests {
         let snapshot = try await fetchClaude(body)
 
         #expect(snapshot.windows == [
-            QuotaWindow(id: "five_hour", title: "5-hour limit", remainingPercent: 58, resetAt: Date(timeIntervalSince1970: 1_784_643_000.268)),
-            QuotaWindow(id: "seven_day", title: "Weekly limit", remainingPercent: 72, resetAt: nil),
-            QuotaWindow(id: "seven_day_fable", title: "Weekly Fable limit", remainingPercent: 0, resetAt: Date(timeIntervalSince1970: 1_800_000_000)),
+            QuotaWindow(id: "five_hour", title: "5-hour", remainingPercent: 58, resetAt: Date(timeIntervalSince1970: 1_784_643_000.268)),
+            QuotaWindow(id: "seven_day", title: "Weekly", remainingPercent: 72, resetAt: nil),
+            QuotaWindow(id: "seven_day_fable", title: "Weekly Fable", remainingPercent: 0, resetAt: Date(timeIntervalSince1970: 1_800_000_000)),
             QuotaWindow(id: "extra_usage", title: "Extra usage", remainingPercent: 90, resetAt: nil),
         ])
     }
@@ -44,7 +44,7 @@ struct SubscriptionRemoteUsageTests {
         let body = #"{"seven_day_opus":{"utilization":30,"resets_at":null},"limits":[{"kind":"weekly_scoped","percent":90,"resets_at":null,"scope":{"model":{"display_name":"Opus"},"surface":null}}]}"#
         let snapshot = try await fetchClaude(body)
 
-        #expect(snapshot.windows == [QuotaWindow(id: "seven_day_opus", title: "Weekly Opus limit", remainingPercent: 70, resetAt: nil)])
+        #expect(snapshot.windows == [QuotaWindow(id: "seven_day_opus", title: "Weekly Opus", remainingPercent: 70, resetAt: nil)])
     }
 
     @Test(arguments: [
@@ -71,7 +71,7 @@ struct SubscriptionRemoteUsageTests {
         let body = #"{"limits":[{"kind":"weekly_scoped","percent":25,"resets_at":null,"scope":{"model":{"display_name":" Fa\u0007ble\u202E Max\n"},"surface":null}},{"kind":"weekly_scoped","percent":25,"resets_at":null,"scope":{"model":{"display_name":"\u0000\t"},"surface":null}}]}"#
         let snapshot = try await fetchClaude(body)
 
-        #expect(snapshot.windows == [QuotaWindow(id: "seven_day_fable_max", title: "Weekly Fable Max limit", remainingPercent: 75, resetAt: nil)])
+        #expect(snapshot.windows == [QuotaWindow(id: "seven_day_fable_max", title: "Weekly Fable Max", remainingPercent: 75, resetAt: nil)])
     }
 
     @Test func claudeKeepsNonASCIIModelName() async throws {
@@ -79,7 +79,7 @@ struct SubscriptionRemoteUsageTests {
         let snapshot = try await fetchClaude(body)
 
         #expect(snapshot.windows.map(\.id) == ["seven_day_模型"])
-        #expect(snapshot.windows.map(\.title) == ["Weekly 模型 limit"])
+        #expect(snapshot.windows.map(\.title) == ["Weekly 模型"])
     }
 
     @Test func claudeValidatesPunctuationOnlyModelName() async throws {
@@ -112,6 +112,7 @@ struct SubscriptionRemoteUsageTests {
             #expect(request.httpShouldHandleCookies == false)
         }
         #expect(snapshot.windows.map(\.id) == ["codex.primary", "codex.secondary"])
+        #expect(snapshot.windows.map(\.title) == ["Codex Primary", "Codex Secondary"])
         #expect(snapshot.windows.map(\.remainingPercent) == [85, 60])
         #expect(snapshot.resetCredits == nil)
     }
@@ -125,6 +126,29 @@ struct SubscriptionRemoteUsageTests {
         await #expect(throws: QuotaError.unauthorized) {
             _ = try await CodexRemoteUsage.fetch(tokens: codexTokens, transport: transport, observedAt: observedAt)
         }
+    }
+
+    @Test func codexNamesWindowsFromTheirReportedLength() async throws {
+        let snapshot = try await fetchCodex(#"{"rate_limit":{"primary_window":{"used_percent":15,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":40,"limit_window_seconds":604800,"reset_at":1800060000}},"additional_rate_limits":[{"limit_id":"codex_spark","limit_name":"GPT-5.3-Codex-Spark","primary_window":{"used_percent":5,"limit_window_seconds":18000},"secondary_window":{"used_percent":10,"limit_window_seconds":12345}}]}"#)
+        #expect(snapshot.windows.map(\.id) == ["codex.primary", "codex.secondary", "codex_spark.primary", "codex_spark.secondary"])
+        #expect(snapshot.windows.map(\.title) == ["5-hour", "Weekly", "5-hour GPT-5.3-Codex-Spark", "GPT-5.3-Codex-Spark Secondary"])
+    }
+
+    @Test(arguments: [
+        ("604800", "Weekly"), ("2592000", "Monthly"), ("12345", "Codex Primary"), ("0", "Codex Primary"),
+        (#""604800""#, "Codex Primary"), ("null", "Codex Primary"),
+    ])
+    func codexNamesMainBucketWithOnlyPrimaryWindow(length: String, title: String) async throws {
+        let snapshot = try await fetchCodex(#"{"rate_limit":{"primary_window":{"used_percent":15,"limit_window_seconds":"# + length + #","reset_at":1800000000}}}"#)
+        #expect(snapshot.windows == [QuotaWindow(id: "codex.primary", title: title, remainingPercent: 85, resetAt: Date(timeIntervalSince1970: 1_800_000_000))])
+    }
+
+    private func fetchCodex(_ body: String) async throws -> QuotaSnapshot {
+        let transport = QueuedSubscriptionTransport(responses: [
+            .success(.init(statusCode: 200, body: Data(body.utf8))),
+            .success(.init(statusCode: 404, body: Data("not found".utf8))),
+        ])
+        return try await CodexRemoteUsage.fetch(tokens: codexTokens, transport: transport, observedAt: observedAt)
     }
 }
 

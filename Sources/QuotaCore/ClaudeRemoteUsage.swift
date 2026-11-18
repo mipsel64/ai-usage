@@ -46,10 +46,10 @@ public enum ClaudeRemoteUsage {
     private static func decode(_ body: Data, observedAt: Date) throws -> QuotaSnapshot {
         let payload = try JSONDecoder().decode(ClaudeUsagePayload.self, from: body)
         let values: [(String, String, ClaudeUsageWindow?)] = [
-            ("five_hour", "5-hour limit", payload.fiveHour),
-            ("seven_day", "Weekly limit", payload.sevenDay),
-            ("seven_day_opus", "Weekly Opus limit", payload.sevenDayOpus),
-            ("seven_day_sonnet", "Weekly Sonnet limit", payload.sevenDaySonnet),
+            ("five_hour", "5-hour", payload.fiveHour),
+            ("seven_day", "Weekly", payload.sevenDay),
+            ("seven_day_opus", "Weekly Opus", payload.sevenDayOpus),
+            ("seven_day_sonnet", "Weekly Sonnet", payload.sevenDaySonnet),
         ]
         var windows = try values.compactMap { id, title, value in
             try value?.window(id: id, title: title)
@@ -150,7 +150,7 @@ private struct ClaudeScopedWeeklyLimit: Decodable {
             .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
         guard let percent, !hasMalformedReset else { throw QuotaError.invalidResponse }
         let window = try ClaudeUsageWindow(utilization: percent, resetsAt: resetsAt)
-            .window(id: "seven_day_\(slug)", title: "Weekly \(modelName) limit")
+            .window(id: "seven_day_\(slug)", title: "Weekly \(modelName)")
         return slug.isEmpty ? nil : window
     }
 }
