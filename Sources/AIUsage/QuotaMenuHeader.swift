@@ -5,6 +5,8 @@ import SwiftUI
 struct QuotaMenuHeader: View {
     let store: UsageStore
 
+    private static let refreshButtonSize: CGFloat = 26
+
     private var latestObservation: Date? {
         store.states.values
             .filter { $0.connected }
@@ -32,10 +34,9 @@ struct QuotaMenuHeader: View {
             }
             Button("Refresh All", systemImage: "arrow.clockwise", action: refreshAll)
                 .labelStyle(.iconOnly)
-                .usageActionStyle()
-                .buttonBorderShape(.circle)
-                .controlSize(.small)
-                .frame(width: 26, height: 26)
+                .buttonStyle(.borderless)
+                .frame(width: Self.refreshButtonSize, height: Self.refreshButtonSize)
+                .contentShape(.rect)
                 .disabled(refreshableProviders.isEmpty)
                 .accessibilityLabel("Refresh All")
                 .help("Refresh all connected providers")

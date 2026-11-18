@@ -38,13 +38,17 @@ struct ProviderCardHeader: View {
         .frame(minHeight: 24)
     }
 
+    private var activityIndicator: some View {
+        ProgressView()
+            .controlSize(.mini)
+            .frame(width: 24, height: 24)
+            .accessibilityLabel("\(provider.displayName) activity in progress")
+    }
+
     @ViewBuilder
     private var trailingControl: some View {
         if isConnecting {
-            ProgressView()
-                .controlSize(.small)
-                .frame(width: 24, height: 24)
-                .accessibilityLabel("\(provider.displayName) activity in progress")
+            activityIndicator
         } else if needsAuthentication {
             Button("Sign In", action: onConnect)
                 .buttonStyle(.borderedProminent)
@@ -58,10 +62,7 @@ struct ProviderCardHeader: View {
                 .controlSize(.small)
                 .accessibilityLabel("Connect \(provider.displayName)")
         } else if state?.loading == true {
-            ProgressView()
-                .controlSize(.small)
-                .frame(width: 24, height: 24)
-                .accessibilityLabel("\(provider.displayName) activity in progress")
+            activityIndicator
         }
         ProviderActionsMenu(
             provider: provider,
