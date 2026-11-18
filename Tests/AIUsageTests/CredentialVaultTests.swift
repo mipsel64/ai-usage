@@ -21,7 +21,7 @@ struct CredentialVaultTests {
             try vault.store("first", for: id)
             try vault.store("second", for: id)
             #expect(try await vault.read(id, interactive: false) == "second")
-            #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == [id.rawValue])
+            #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted() == [".gitignore", id.rawValue])
         }
     }
 
@@ -126,11 +126,113 @@ struct CredentialVaultTests {
         }
     }
 
+    @Test func newDirectoryTellsGitToIgnoreItsFiles() async throws {
+        try await withVault { vault, directory, _ in
+            try vault.store("synthetic-token", for: id)
+            #expect(try String(contentsOf: directory.appendingPathComponent(".gitignore"), encoding: .utf8) == "*\n")
+        }
+    }
+
+    @Test func symlinkAtDirectoryIsRefused() async throws {
+        try await withVault(legacyValues: [id: "legacy-token"]) { vault, directory, legacy in
+            let elsewhere = directory.deletingLastPathComponent().appendingPathComponent("elsewhere", isDirectory: true)
+            try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: elsewhere)
+
+            #expect(throws: VaultError.inaccessible) { try vault.store("synthetic-token", for: id) }
+            await #expect(throws: VaultError.inaccessible) { try await vault.read(id, interactive: false) }
+            #expect(throws: VaultError.inaccessible) { try vault.remove(id) }
+
+            #expect(try FileManager.default.contentsOfDirectory(atPath: elsewhere.path).isEmpty)
+            #expect(legacy.reads.isEmpty)
+            #expect(legacy.removals.isEmpty)
+        }
+    }
+
+    @Test func existingDirectoryWithOpenPermissionsIsMadePrivate() async throws {
+        try await withVault { vault, directory, _ in
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o755])
+            try vault.store("synthetic-token", for: id)
+            #expect(try mode(directory) == 0o700)
+            #expect(try await vault.read(id, interactive: false) == "synthetic-token")
+        }
+    }
+
+    @Test func staleTemporaryFileIsReplacedAndRemoved() async throws {
+        try await withVault { vault, directory, _ in
+            let temporary = directory.appendingPathComponent(".\(id.rawValue).tmp")
+            try write("stale-token", to: temporary, mode: 0o600)
+            try vault.store("synthetic-token", for: id)
+            #expect(!FileManager.default.fileExists(atPath: temporary.path))
+            #expect(try await vault.read(id, interactive: false) == "synthetic-token")
+
+            try write("stale-token", to: temporary, mode: 0o600)
+            try vault.remove(id)
+            #expect(!FileManager.default.fileExists(atPath: temporary.path))
+        }
+    }
+
+    @Test func oversizedValueIsRefusedBeforeTheFileChanges() async throws {
+        try await withVault { vault, _, _ in
+            try vault.store("old-token", for: id)
+            #expect(throws: VaultError.inaccessible) { try vault.store(String(repeating: "a", count: 64 * 1024 + 1), for: id) }
+            #expect(try await vault.read(id, interactive: false) == "old-token")
+        }
+    }
+
+    @Test func oversizedLegacyValueStaysInKeychain() async throws {
+        try await withVault(legacyValues: [id: String(repeating: "a", count: 64 * 1024 + 1)]) { vault, directory, legacy in
+            await #expect(throws: VaultError.inaccessible) { try await vault.read(id, interactive: false) }
+            #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(id.rawValue).path))
+            #expect(legacy.removals.isEmpty)
+        }
+    }
+
+    @Test func failedKeychainDeleteStopsRemove() async throws {
+        try await withVault(legacyRemoveError: VaultError.keychainRemoval) { vault, _, _ in
+            try vault.store("synthetic-token", for: id)
+            #expect(throws: VaultError.keychainRemoval) { try vault.remove(id) }
+            #expect(try await vault.read(id, interactive: false) == "synthetic-token")
+        }
+    }
+
+    @Test func keychainMoveDoesNotOverwriteAReconnect() async throws {
+        let gate = Gate()
+        let id = id
+        try await withVault(legacyValues: [id: "old-token"], gate: gate) { vault, directory, legacy in
+            let moved = Task { try await vault.read(id, interactive: false) }
+            await gate.waitUntilEntered()
+            try vault.store("new-token", for: id)
+            await gate.open()
+
+            #expect(try await moved.value == "new-token")
+            #expect(try String(contentsOf: directory.appendingPathComponent(id.rawValue), encoding: .utf8) == "new-token")
+            #expect(legacy.removals.isEmpty)
+        }
+    }
+
+    @Test func keychainMoveDoesNotUndoADisconnect() async throws {
+        let gate = Gate()
+        let id = id
+        try await withVault(legacyValues: [id: "old-token"], gate: gate) { vault, directory, legacy in
+            let moved = Task { try await vault.read(id, interactive: false) }
+            await gate.waitUntilEntered()
+            try vault.remove(id)
+            await gate.open()
+
+            await #expect(throws: QuotaError.notConfigured) { try await moved.value }
+            #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(id.rawValue).path))
+            #expect(legacy.removals == [id])
+        }
+    }
+
     private func withVault(legacyValues: [ProviderID: String] = [:], legacyError: (any Error)? = nil,
+                           legacyRemoveError: (any Error)? = nil, gate: Gate? = nil,
                            _ body: (CredentialVault, URL, FakeLegacyCredentials) async throws -> Void) async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let legacy = FakeLegacyCredentials(values: legacyValues, readError: legacyError)
+        let legacy = FakeLegacyCredentials(values: legacyValues, readError: legacyError, removeError: legacyRemoveError, gate: gate)
         try await body(CredentialVault(directory: directory, legacy: legacy), directory, legacy)
     }
 
@@ -155,28 +257,36 @@ private final class FakeLegacyCredentials: LegacyCredentialReading, @unchecked S
     private let lock = NSLock()
     private var values: [ProviderID: String]
     private let readError: (any Error)?
+    private let removeError: (any Error)?
+    private let gate: Gate?
     private var readInteractions: [Bool] = []
     private var removedIDs: [ProviderID] = []
 
-    init(values: [ProviderID: String], readError: (any Error)?) {
+    init(values: [ProviderID: String], readError: (any Error)?, removeError: (any Error)?, gate: Gate?) {
         self.values = values
         self.readError = readError
+        self.removeError = removeError
+        self.gate = gate
     }
 
     var reads: [Bool] { withLock { readInteractions } }
     var removals: [ProviderID] { withLock { removedIDs } }
 
+    /// Takes the value first and then waits at the gate, like a Keychain read that waits for a dialog.
     func read(_ id: ProviderID, interactive: Bool) async throws -> String {
-        try withLock {
+        let result: Result<String, any Error> = withLock {
             readInteractions.append(interactive)
-            if let readError { throw readError }
-            guard let value = values[id] else { throw QuotaError.notConfigured }
-            return value
+            if let readError { return .failure(readError) }
+            guard let value = values[id] else { return .failure(QuotaError.notConfigured) }
+            return .success(value)
         }
+        await gate?.enter()
+        return try result.get()
     }
 
     func remove(_ id: ProviderID) throws {
-        withLock {
+        try withLock {
+            if let removeError { throw removeError }
             removedIDs.append(id)
             values[id] = nil
         }
@@ -186,5 +296,29 @@ private final class FakeLegacyCredentials: LegacyCredentialReading, @unchecked S
         lock.lock()
         defer { lock.unlock() }
         return try body()
+    }
+}
+
+private actor Gate {
+    private var entered = false
+    private var released = false
+    private var enterWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func enter() async {
+        entered = true
+        enterWaiter?.resume()
+        enterWaiter = nil
+        if !released { await withCheckedContinuation { releaseWaiter = $0 } }
+    }
+
+    func waitUntilEntered() async {
+        if !entered { await withCheckedContinuation { enterWaiter = $0 } }
+    }
+
+    func open() {
+        released = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
     }
 }
