@@ -74,6 +74,22 @@ struct SubscriptionRemoteUsageTests {
         #expect(snapshot.windows == [QuotaWindow(id: "seven_day_fable_max", title: "7-day Fable Max limit", remainingPercent: 75, resetAt: nil)])
     }
 
+    @Test func claudeKeepsNonASCIIModelName() async throws {
+        let body = #"{"limits":[{"kind":"weekly_scoped","percent":25,"resets_at":null,"scope":{"model":{"display_name":"模型"},"surface":null}}]}"#
+        let snapshot = try await fetchClaude(body)
+
+        #expect(snapshot.windows.map(\.id) == ["seven_day_模型"])
+        #expect(snapshot.windows.map(\.title) == ["7-day 模型 limit"])
+    }
+
+    @Test func claudeValidatesPunctuationOnlyModelName() async throws {
+        let body = #"{"limits":[{"kind":"weekly_scoped","percent":101,"resets_at":null,"scope":{"model":{"display_name":"--"},"surface":null}}]}"#
+
+        await #expect(throws: QuotaError.invalidResponse) {
+            _ = try await fetchClaude(body)
+        }
+    }
+
     private func fetchClaude(_ body: String) async throws -> QuotaSnapshot {
         let transport = QueuedSubscriptionTransport(responses: [.success(.init(statusCode: 200, body: Data(body.utf8)))])
         return try await ClaudeRemoteUsage.fetch(tokens: claudeTokens, transport: transport, observedAt: observedAt)

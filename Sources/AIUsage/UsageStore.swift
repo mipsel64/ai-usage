@@ -277,7 +277,7 @@ final class UsageStore {
                 let credit = last.resetCredits.flatMap { before in reading.resetCredits.map { $0.availableCount > before.availableCount } } ?? false
                 let low = reading.lowWindows(since: last)
                 if reset || credit || !low.isEmpty {
-                    await postNotification(provider: provider, body: Self.notificationBody(reset: reset, credit: credit, low: low))
+                    await postNotification(provider: provider, generation: generation, body: Self.notificationBody(reset: reset, credit: credit, low: low))
                 }
             }
             startAccountRead(for: provider, access: readingAccess, generation: generation)
@@ -397,9 +397,9 @@ final class UsageStore {
         return lines.joined(separator: "\n")
     }
 
-    private func postNotification(provider: QuotaProvider, body: String) async {
+    private func postNotification(provider: QuotaProvider, generation: UUID?, body: String) async {
         await updatePermissionStatus()
-        guard notificationsEnabled, states[provider.id]?.connected == true else { return }
+        guard generation == generations[provider.id], notificationsEnabled, states[provider.id]?.connected == true else { return }
         let content = UNMutableNotificationContent()
         content.title = provider.displayName
         content.body = body

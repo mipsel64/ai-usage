@@ -146,12 +146,12 @@ private struct ClaudeScopedWeeklyLimit: Decodable {
     func window() throws -> QuotaWindow? {
         guard let modelName else { return nil }
         let slug = modelName.lowercased()
-            .replacing(#/[^a-z0-9]+/#, with: "_")
+            .replacing(#/[^\p{L}\p{N}]+/#, with: "_")
             .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-        guard !slug.isEmpty else { return nil }
         guard let percent, !hasMalformedReset else { throw QuotaError.invalidResponse }
-        return try ClaudeUsageWindow(utilization: percent, resetsAt: resetsAt)
+        let window = try ClaudeUsageWindow(utilization: percent, resetsAt: resetsAt)
             .window(id: "seven_day_\(slug)", title: "7-day \(modelName) limit")
+        return slug.isEmpty ? nil : window
     }
 }
 

@@ -30,7 +30,7 @@ struct NotificationsAccountPanel: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } footer: {
-                Text("AI Usage reads connected subscriptions about once a minute. Low-quota alerts are sent when a window goes below \(QuotaSnapshot.lowQuotaThresholds.map { "\($0)%" }.formatted(.list(type: .and))). Checks and alerts stop when you quit the app.")
+                Text("AI Usage reads connected subscriptions about once a minute. Low-quota alerts are sent when a window goes below \(QuotaSnapshot.lowQuotaThresholds.map { "\($0)%" }.joined(separator: " and ")). Checks and alerts stop when you quit the app.")
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
