@@ -3,6 +3,12 @@ import Testing
 @testable import QuotaCore
 
 struct RemoteUsageTests {
+    private static let zaiQuotaBody = Data(#"""
+        {"code":200,"success":true,"data":{"limits":[
+            {"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":20}
+        ]}}
+    """#.utf8)
+
     private let observedAt = Date(timeIntervalSince1970: 1_800_000_100)
 
     @Test func zaiMapsDistinctWindowsAndConvertsUsedToRemaining() async throws {
@@ -20,7 +26,7 @@ struct RemoteUsageTests {
                         "percentage": 12.5, "nextResetTime": 1800000000123
                     },
                     {
-                        "type": "TOKENS_LIMIT", "unit": 6,
+                        "type": "TOKENS_LIMIT", "unit": 6, "number": 1,
                         "percentage": 60, "nextResetTime": 1800060000000
                     }
                 ] }
@@ -68,6 +74,112 @@ struct RemoteUsageTests {
         #expect(snapshot.windows.count == 1)
         #expect(snapshot.windows[0].remainingPercent == 100)
         #expect(snapshot.windows[0].resetAt == nil)
+    }
+
+    @Test func zaiKeepsLegacyWeeklyNumberPairs() async throws {
+        for number in ["7", "null"] {
+            let snapshot = try await fetch(
+                .zai,
+                body: """
+                {"code":200,"success":true,"data":{"limits":[
+                    {"type":"CREDIT_LIMIT","unit":6,"number":\(number),"percentage":40}
+                ]}}
+                """
+            )
+            #expect(snapshot.windows.map(\.id) == ["zai-weekly"])
+            #expect(snapshot.windows[0].remainingPercent == 60)
+        }
+    }
+
+    @Test func zaiSkipsUnknownUnitNumberPairs() async throws {
+        let snapshot = try await fetch(
+            .zai,
+            body: #"""
+                {"code":200,"success":true,"data":{"limits":[
+                    {"type":"TOKENS_LIMIT","unit":6,"number":2,"percentage":90},
+                    {"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":25}
+                ]}}
+            """#
+        )
+        #expect(snapshot.windows.map(\.id) == ["zai-5h"])
+    }
+
+    @Test func zaiRejectsDuplicateWeeklyWindows() async {
+        await assertError(
+            .invalidResponse,
+            provider: .zai,
+            body: Data(#"""
+                {"code":200,"success":true,"data":{"limits":[
+                    {"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":10},
+                    {"type":"CREDIT_LIMIT","unit":6,"number":7,"percentage":20}
+                ]}}
+            """#.utf8)
+        )
+    }
+
+    @Test func zaiReadsAvailableResetCountAndNearestExpiry() async throws {
+        let transport = MockRemoteUsageTransport(
+            body: Self.zaiQuotaBody,
+            resetBody: Data(#"""
+                {"code":200,"success":true,"data":{
+                    "fiveHourResets":[
+                        {"available":false,"expireTime":"2026-11-01 23:59:59"}
+                    ],
+                    "weekResets":[
+                        {"available":true,"expireTime":"2026-12-22 23:59:59"},
+                        {"available":true,"expireTime":"2026-12-23 23:59:59"},
+                        {"available":true,"expireTime":"2026-12-22 23:59:59"}
+                    ]
+                }}
+            """#.utf8)
+        )
+        let snapshot = try await RemoteUsage.fetch(
+            provider: .zai,
+            credential: "test-key",
+            transport: transport,
+            observedAt: observedAt
+        )
+
+        #expect(snapshot.windows.map(\.id) == ["zai-5h"])
+        #expect(snapshot.resetCredits == ResetCredits(
+            availableCount: 3,
+            nextID: nil,
+            nextTitle: nil,
+            nextExpiry: Date(timeIntervalSince1970: 1_797_955_199)
+        ))
+        let requests = await transport.requests
+        #expect(requests.count == 2)
+        #expect(requests.last?.url?.absoluteString ==
+            "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL")
+        #expect(requests.last?.httpMethod == "GET")
+        #expect(requests.last?.httpBody == nil)
+    }
+
+    @Test func zaiResetReadIsBestEffort() async throws {
+        let empty = Data(#"""
+            {"code":200,"success":true,"data":{"fiveHourResets":[],"weekResets":[]}}
+        """#.utf8)
+        let malformed = Data(#"""
+            {"code":200,"success":true,"data":{"fiveHourResets":[],"weekResets":[
+                {"available":true,"expireTime":"not-a-date"}
+            ]}}
+        """#.utf8)
+        let transports = [
+            MockRemoteUsageTransport(body: Self.zaiQuotaBody, resetBody: empty),
+            MockRemoteUsageTransport(body: Self.zaiQuotaBody, resetBody: malformed),
+            MockRemoteUsageTransport(body: Self.zaiQuotaBody, resetErrorCode: .networkConnectionLost),
+        ]
+
+        for transport in transports {
+            let snapshot = try await RemoteUsage.fetch(
+                provider: .zai,
+                credential: "test-key",
+                transport: transport,
+                observedAt: observedAt
+            )
+            #expect(snapshot.windows.map(\.id) == ["zai-5h"])
+            #expect(snapshot.resetCredits == nil)
+        }
     }
 
     @Test func zaiIgnoresUnknownFutureWindowTypes() async throws {
@@ -191,8 +303,8 @@ struct RemoteUsageTests {
                 observedAt: observedAt
             )
             let requests = await transport.requests
-            let request = try #require(requests.last)
-            #expect(requests.count == 1)
+            let request = try #require(requests.first)
+            #expect(requests.count == (provider == .zai ? 2 : 1))
             #expect(request.url?.absoluteString == expectedURL)
             #expect(request.httpMethod == "GET")
             #expect(request.httpBody == nil)
@@ -201,6 +313,15 @@ struct RemoteUsageTests {
             #expect(request.value(forHTTPHeaderField: "Cache-Control") == "no-cache")
             #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
             #expect(!request.httpShouldHandleCookies)
+            if provider == .zai {
+                let resetRequest = try #require(requests.last)
+                #expect(resetRequest.url?.absoluteString ==
+                    "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL")
+                #expect(resetRequest.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+                #expect(resetRequest.value(forHTTPHeaderField: "Accept") == "application/json")
+                #expect(resetRequest.value(forHTTPHeaderField: "Cache-Control") == "no-cache")
+                #expect(!resetRequest.httpShouldHandleCookies)
+            }
         }
     }
 
@@ -485,18 +606,36 @@ struct RemoteUsageTests {
 
 private actor MockRemoteUsageTransport: RemoteUsageTransport {
     private let result: Result<RemoteUsageTransportResponse, URLError>
+    private let resetResult: Result<RemoteUsageTransportResponse, URLError>?
     private(set) var requests: [URLRequest] = []
 
-    init(body: Data = Data(), status: Int? = 200) {
+    init(
+        body: Data = Data(),
+        status: Int? = 200,
+        resetBody: Data? = nil,
+        resetStatus: Int? = 200,
+        resetErrorCode: URLError.Code? = nil
+    ) {
         result = .success(RemoteUsageTransportResponse(statusCode: status, body: body))
+        if let resetErrorCode {
+            resetResult = .failure(URLError(resetErrorCode))
+        } else if let resetBody {
+            resetResult = .success(RemoteUsageTransportResponse(statusCode: resetStatus, body: resetBody))
+        } else {
+            resetResult = nil
+        }
     }
 
     init(errorCode: URLError.Code) {
         result = .failure(URLError(errorCode))
+        resetResult = nil
     }
 
     func response(for request: URLRequest) async throws -> RemoteUsageTransportResponse {
         requests.append(request)
+        if request.url?.path == "/api/biz/customer-package-reset/list", let resetResult {
+            return try resetResult.get()
+        }
         return try result.get()
     }
 }
