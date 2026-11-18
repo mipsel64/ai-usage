@@ -2,8 +2,7 @@ import AppKit
 import SwiftUI
 
 struct MenuPopoverWindow: NSViewRepresentable {
-    let usesGlass: Bool
-    let reduceTransparency: Bool
+    let needsMaterial: Bool
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -19,14 +18,13 @@ struct MenuPopoverWindow: NSViewRepresentable {
         configureMaterial(in: view)
         DispatchQueue.main.async { [weak view] in
             guard let window = view?.window else { return }
-            window.isOpaque = reduceTransparency
-            window.backgroundColor = reduceTransparency ? .windowBackgroundColor : .clear
+            window.isOpaque = false
+            window.backgroundColor = .clear
             window.hasShadow = true
         }
     }
 
     private func configureMaterial(in view: NSView) {
-        let needsMaterial = !usesGlass && !reduceTransparency
         if let material = view.subviews.first as? NSVisualEffectView {
             material.isHidden = !needsMaterial
         } else if needsMaterial {
