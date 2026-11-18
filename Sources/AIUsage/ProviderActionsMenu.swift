@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ProviderActionsMenu: View {
     let provider: QuotaProvider
+    let canRefresh: Bool
     let canRedeem: Bool
     let onRefresh: () -> Void
     let onShowAccounts: () -> Void
@@ -13,6 +14,7 @@ struct ProviderActionsMenu: View {
     var body: some View {
         Menu("\(provider.displayName) actions", systemImage: "ellipsis") {
             Button("Refresh", systemImage: "arrow.clockwise", action: onRefresh)
+                .disabled(!canRefresh)
             Button("Open Usage Portal", systemImage: "arrow.up.right", action: openUsagePortal)
             Button("Account Settings…", systemImage: "person.crop.circle", action: onShowAccounts)
             if provider.supportsBankedReset {

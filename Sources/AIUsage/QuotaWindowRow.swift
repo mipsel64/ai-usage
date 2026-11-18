@@ -7,19 +7,39 @@ struct QuotaWindowRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(window.title)
-                    .font(.callout.weight(.medium))
-                    .lineLimit(1)
-                if let resetAt = window.resetAt {
-                    Text(resetCountdown(from: now, to: resetAt))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+            ViewThatFits {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(window.title)
+                        .font(.callout.weight(.medium))
                         .lineLimit(1)
+                    if let resetAt = window.resetAt {
+                        Text(resetCountdown(from: now, to: resetAt))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                    }
+                    Text(remainingText).hidden()
                 }
-                Spacer(minLength: 6)
-                Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0...1))))%")
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(window.title)
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                        Text(remainingText).hidden()
+                    }
+                    if let resetAt = window.resetAt {
+                        Text(resetCountdown(from: now, to: resetAt))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: Alignment(horizontal: .trailing, vertical: .firstTextBaseline)) {
+                Text(remainingText)
                     .font(.callout.weight(.semibold))
                     .monospacedDigit()
             }
@@ -31,6 +51,10 @@ struct QuotaWindowRow: View {
                 .accessibilityLabel("\(window.title) remaining quota")
                 .accessibilityValue("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0...1)))) percent")
         }
+    }
+
+    private var remainingText: String {
+        "\(window.remainingPercent.formatted(.number.precision(.fractionLength(0...1))))%"
     }
 
     private func hasUsableResetInterval(_ interval: TimeInterval) -> Bool {
