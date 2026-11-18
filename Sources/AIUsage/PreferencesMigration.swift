@@ -14,7 +14,7 @@ enum PreferencesMigration {
 
     static func migrate(from legacy: UserDefaults, into defaults: UserDefaults) {
         guard !defaults.bool(forKey: marker) else { return }
-        let prefixes = ["connected.", "path.", "snapshot.", "oauthVersion.", "intent."]
+        let prefixes = ["connected.", "path.", "snapshot.", "oauthVersion.", "intent.", "account."]
         for (key, value) in legacy.dictionaryRepresentation()
         where key == "notify" || prefixes.contains(where: { key.hasPrefix($0) }) {
             defaults.set(value, forKey: key)

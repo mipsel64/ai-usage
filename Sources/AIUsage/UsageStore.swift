@@ -28,6 +28,7 @@ final class UsageStore {
     private let now: () -> Date
     private(set) var states: [ProviderID: ProviderState] = [:]
     private var generations: [ProviderID: UUID] = [:]
+    private var loadedAccounts: Set<ProviderID> = []
     private var redeeming: Set<ProviderID> = []
     private(set) var notificationsEnabled: Bool
     private(set) var notificationStatus: String = ""
@@ -52,6 +53,9 @@ final class UsageStore {
             let id = provider.id
             let connected = defaults.bool(forKey: "connected.\(id.rawValue)")
             var state = ProviderState(connected: connected)
+            if connected, let data = defaults.data(forKey: "account.\(id.rawValue)") {
+                state.account = (try? JSONDecoder().decode(AccountIdentity.self, from: data))?.sanitized()
+            }
             if connected, let data = defaults.data(forKey: "snapshot.\(id.rawValue)") {
                 state.snapshot = try? JSONDecoder().decode(QuotaSnapshot.self, from: data)
                 state.message = "Waiting for the next reading."
@@ -81,11 +85,14 @@ final class UsageStore {
         guard let provider = providers.first(where: { $0.id == id }), !redeeming.contains(id) else { throw QuotaError.unavailable }
         let generation = generations[id]
         let firstReading: QuotaSnapshot?
+        var connectionAccess: ProviderAccess?
+        var signInAccount: AccountIdentity?
         switch provider.connection {
         case let .signedExecutable(requirement):
             guard let executable else { throw QuotaError.notConfigured }
             _ = try await Task.detached { try requirement.validate(executable) }.value
             firstReading = try await provider.read(.executable(executable))
+            connectionAccess = .executable(executable)
             guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
             defaults.set(executable.path, forKey: "path.\(id.rawValue)")
         case .apiKey:
@@ -94,13 +101,17 @@ final class UsageStore {
                 throw ActionError("Enter a coding plan API key with no spaces or line breaks.")
             }
             firstReading = try await provider.read(.apiKey(key))
+            connectionAccess = .apiKey(key)
             guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
             try vault.store(key, for: id)
         case .browserLogin:
             guard secret == nil, executable == nil else { throw QuotaError.notConfigured }
-            let key = try await browserLogin.login(id)
+            let login = try await browserLogin.login(id)
+            let key = login.key
+            signInAccount = login.account?.sanitized()
             guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
             firstReading = try await provider.read(.apiKey(key))
+            connectionAccess = .apiKey(key)
             guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
             try vault.store(key, for: id)
         case .oauth:
@@ -114,32 +125,51 @@ final class UsageStore {
                 persistRefreshedTokens: false
             )
             firstReading = result.snapshot
+            connectionAccess = .oauth(result.tokens)
             guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
             try vault.store(try Self.encode(tokens: result.tokens), for: id)
         }
-        generations[id] = UUID()
+        let connectedGeneration = UUID()
+        generations[id] = connectedGeneration
+        loadedAccounts.insert(id)
         defaults.removeObject(forKey: "snapshot.\(id.rawValue)")
+        defaults.removeObject(forKey: "account.\(id.rawValue)")
         defaults.set(true, forKey: "connected.\(id.rawValue)")
         if case .oauth = provider.connection {
             defaults.set(1, forKey: "oauthVersion.\(id.rawValue)")
         }
-        states[id] = ProviderState(connected: true, snapshot: firstReading)
+        if case .browserLogin = provider.connection, let signInAccount,
+           let data = try? JSONEncoder().encode(signInAccount) {
+            defaults.set(data, forKey: "account.\(id.rawValue)")
+        }
+        states[id] = ProviderState(connected: true, snapshot: firstReading, account: signInAccount)
         if let firstReading {
             defaults.set(try JSONEncoder().encode(firstReading), forKey: "snapshot.\(id.rawValue)")
         } else {
             await refresh(id)
+        }
+        if signInAccount == nil, let connectionAccess {
+            await updateAccount(for: provider, access: connectionAccess, generation: connectedGeneration)
         }
     }
 
     func disconnect(_ id: ProviderID) async throws {
         guard let provider = providers.first(where: { $0.id == id }), !redeeming.contains(id) else { throw QuotaError.unavailable }
         generations[id] = UUID()
+        loadedAccounts.remove(id)
         switch provider.connection {
         case .apiKey, .browserLogin, .oauth: try vault.remove(id)
         default: break
         }
-        for prefix in ["connected", "path", "snapshot", "oauthVersion"] { defaults.removeObject(forKey: "\(prefix).\(id.rawValue)") }
+        for prefix in ["connected", "path", "snapshot", "oauthVersion", "account"] { defaults.removeObject(forKey: "\(prefix).\(id.rawValue)") }
         states[id] = ProviderState()
+    }
+
+    private func updateAccount(for provider: QuotaProvider, access: ProviderAccess, generation: UUID?) async {
+        guard let readAccount = provider.readAccount else { return }
+        let identity = await readAccount(access)?.sanitized()
+        guard generation == generations[provider.id], states[provider.id]?.connected == true else { return }
+        states[provider.id]?.account = identity
     }
 
     private func access(for provider: QuotaProvider, interactive: Bool) async throws -> ProviderAccess {
@@ -220,8 +250,11 @@ final class UsageStore {
             let access = try await access(for: provider, interactive: interactive)
             guard generation == generations[id] else { return }
             let reading: QuotaSnapshot
+            var readingAccess = access
             if case let .oauth(tokens) = access {
-                reading = try await readOAuth(provider: provider, tokens: tokens, generation: generation).snapshot
+                let result = try await readOAuth(provider: provider, tokens: tokens, generation: generation)
+                reading = result.snapshot
+                readingAccess = .oauth(result.tokens)
             } else {
                 reading = try await provider.read(access)
             }
@@ -233,10 +266,15 @@ final class UsageStore {
             states[id]?.message = nil
             states[id]?.needsAuthentication = false
             defaults.set(try JSONEncoder().encode(reading), forKey: "snapshot.\(id.rawValue)")
+            states[id]?.loading = false
             if notificationsEnabled, let last = state.snapshot, reading.observedAt > last.observedAt {
                 let reset = !reading.refreshedWindows(since: last).isEmpty
                 let credit = last.resetCredits.flatMap { before in reading.resetCredits.map { $0.availableCount > before.availableCount } } ?? false
                 if reset || credit { await postNotification(provider: provider, reset: reset, credit: credit) }
+            }
+            if provider.readAccount != nil && !loadedAccounts.contains(id) {
+                loadedAccounts.insert(id)
+                await updateAccount(for: provider, access: readingAccess, generation: generation)
             }
         } catch {
             guard generation == generations[id] else { return }
