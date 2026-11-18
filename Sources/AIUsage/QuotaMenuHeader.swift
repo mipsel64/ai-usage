@@ -43,11 +43,11 @@ struct QuotaMenuHeader: View {
                 } icon: {
                     refreshIcon
                 }
-            }
                 .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
                 .frame(width: Self.refreshButtonSize, height: Self.refreshButtonSize)
                 .contentShape(.rect)
+            }
+                .buttonStyle(.borderless)
                 .disabled(refreshableProviders.isEmpty && !isRefreshing)
                 .accessibilityLabel("Refresh All")
                 .help("Refresh all connected providers")
