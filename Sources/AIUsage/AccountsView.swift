@@ -4,9 +4,12 @@ import SwiftUI
 // Command Line Tools ship the State wrapper but not the Xcode 27 State macro plug-in.
 private typealias ViewState<Value> = SwiftUI.State<Value>
 
+private let paneTitleLeadingInset: CGFloat = 20
+
 @MainActor
 struct AccountsView: View {
     let store: UsageStore
+    @Environment(\.controlActiveState) private var controlActiveState
 
     @ViewState private var selection: AccountSelection?
     @ViewState private var secrets: [ProviderID: String] = [:]
@@ -27,21 +30,24 @@ struct AccountsView: View {
         NavigationSplitView(columnVisibility: .constant(.all)) {
             AccountsSidebar(store: store, selection: $selection)
         } detail: {
-            if selection == .notifications {
-                NotificationsAccountPanel(store: store)
-            } else if case let .provider(id) = selection,
-                      let provider = store.providers.first(where: { $0.id == id }) {
-                ProviderAccountPanel(
-                    store: store,
-                    provider: provider,
-                    state: store.states[id],
-                    secret: secretBinding(for: id),
-                    executable: executableBinding(for: id),
-                    error: errorBinding(for: id),
-                    isBusy: busyBinding(for: id)
-                )
-                .id(id)
+            Group {
+                if selection == .notifications {
+                    NotificationsAccountPanel(store: store)
+                } else if case let .provider(id) = selection,
+                          let provider = store.providers.first(where: { $0.id == id }) {
+                    ProviderAccountPanel(
+                        store: store,
+                        provider: provider,
+                        state: store.states[id],
+                        secret: secretBinding(for: id),
+                        executable: executableBinding(for: id),
+                        error: errorBinding(for: id),
+                        isBusy: busyBinding(for: id)
+                    )
+                    .id(id)
+                }
             }
+            .overlay(alignment: .topLeading) { paneTitle }
         }
         .navigationSplitViewStyle(.balanced)
         .navigationTitle(selectedTitle)
@@ -51,6 +57,19 @@ struct AccountsView: View {
         .onChange(of: selection) {
             secrets.removeAll()
         }
+    }
+
+    // The Settings scene hides the standard title, so the pane title is drawn in the title bar like System Settings.
+    private var paneTitle: some View {
+        GeometryReader { proxy in
+            Text(selectedTitle)
+                .font(.title2.bold())
+                .foregroundStyle(controlActiveState == .inactive ? .secondary : .primary)
+                .frame(height: proxy.safeAreaInsets.top)
+                .padding(.leading, paneTitleLeadingInset)
+                .offset(y: -proxy.safeAreaInsets.top)
+        }
+        .allowsHitTesting(false)
     }
 
     private func selectInitialProvider() {
