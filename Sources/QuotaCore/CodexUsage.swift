@@ -336,18 +336,19 @@ private struct CodexRateLimitsResponse: Decodable {
 
         var windows: [QuotaWindow] = []
         for (key, bucket) in buckets {
+            let isMain = key == "codex"
             let bucketID = bucket.limitId ?? key
             let bucketTitle = bucket.limitName ?? (bucketID == "codex" ? "Codex" : bucketID)
             if let primary = bucket.primary {
                 windows.append(try primary.quotaWindow(
                     id: "\(key).primary",
-                    title: codexWindowTitle(bucket: bucketTitle, slot: "Primary", seconds: primary.windowSeconds)
+                    title: codexWindowTitle(bucket: bucketTitle, isMain: isMain, slot: "Primary", seconds: primary.windowSeconds)
                 ))
             }
             if let secondary = bucket.secondary {
                 windows.append(try secondary.quotaWindow(
                     id: "\(key).secondary",
-                    title: codexWindowTitle(bucket: bucketTitle, slot: "Secondary", seconds: secondary.windowSeconds)
+                    title: codexWindowTitle(bucket: bucketTitle, isMain: isMain, slot: "Secondary", seconds: secondary.windowSeconds)
                 ))
             }
         }
@@ -432,9 +433,9 @@ private struct CodexRateLimitWindow: Decodable {
 }
 
 /// "5-hour" for the main bucket, "Weekly <name>" for another bucket, or "<name> Primary" when the length has no label.
-func codexWindowTitle(bucket: String, slot: String, seconds: Double?) -> String {
+func codexWindowTitle(bucket: String, isMain: Bool, slot: String, seconds: Double?) -> String {
     guard let label = windowLengthLabel(seconds: seconds) else { return "\(bucket) \(slot)" }
-    return bucket == "Codex" ? label : "\(label) \(bucket)"
+    return isMain ? label : "\(label) \(bucket)"
 }
 
 func windowLengthLabel(seconds: Double?) -> String? {

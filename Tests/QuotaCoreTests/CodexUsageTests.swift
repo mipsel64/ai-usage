@@ -90,6 +90,24 @@ struct CodexUsageTests {
         #expect(snapshot.windows.map(\.title) == ["5-hour", "Weekly", "Weekly GPT-5.3-Codex-Spark"])
     }
 
+    @Test func choosesMainBucketByKeyNotByName() async throws {
+        let session = FakeCodexSession(messages: [
+            response(id: 1, result: [:]),
+            response(id: 2, result: usageResult(
+                legacy: bucket(used: 0),
+                buckets: [
+                    "codex": bucket(name: "Codex CLI", used: 10, secondary: window(used: 20, reset: nil, minutes: 10_080)),
+                    "codex_other": bucket(id: "codex_other", name: "Codex", used: 30, minutes: 10_080),
+                ]
+            )),
+        ])
+
+        let snapshot = try await fetch(session: session)
+
+        #expect(snapshot.windows.map(\.id) == ["codex.primary", "codex.secondary", "codex_other.primary"])
+        #expect(snapshot.windows.map(\.title) == ["5-hour", "Weekly", "Weekly Codex"])
+    }
+
     @Test(arguments: [
         (10_080, "Weekly"), (43_200, "Monthly"), (206, "Codex Primary"), (0, "Codex Primary"), (nil, "Codex Primary"),
     ] as [(Int?, String)])
