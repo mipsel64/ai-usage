@@ -512,9 +512,9 @@ private enum ZaiWindowKind: CaseIterable, Hashable {
 
     var title: String {
         switch self {
-        case .fiveHour: return "5-hour limit"
-        case .weekly: return "Weekly limit"
-        case .monthlyTools: return "Monthly tools limit"
+        case .fiveHour: return "5-hour"
+        case .weekly: return "Weekly"
+        case .monthlyTools: return "Monthly tools"
         }
     }
 }
@@ -580,9 +580,9 @@ private enum KimiWindowKind {
 
     var title: String {
         switch self {
-        case .fiveHour: return "5-hour limit"
-        case .weekly: return "Weekly limit"
-        case .monthlyTotal: return "Monthly limit"
+        case .fiveHour: return "5-hour"
+        case .weekly: return "Weekly"
+        case .monthlyTotal: return "Monthly"
         }
     }
 }

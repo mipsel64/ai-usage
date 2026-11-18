@@ -393,7 +393,7 @@ final class UsageStore {
         if reset && credit { lines.append("Quota refreshed. A new reset credit is available.") }
         else if reset { lines.append("Quota refreshed.") }
         else if credit { lines.append("A new reset credit is available.") }
-        lines += low.map { "\($0.window.title) is below \($0.threshold)%." }
+        lines += low.map { "\($0.window.title) limit is below \($0.threshold)%." }
         return lines.joined(separator: "\n")
     }
 

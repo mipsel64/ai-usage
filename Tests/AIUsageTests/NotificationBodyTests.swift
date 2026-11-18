@@ -4,8 +4,8 @@ import QuotaCore
 
 @MainActor
 struct NotificationBodyTests {
-    private let fiveHour = QuotaWindow(id: "5h", title: "5-hour limit", remainingPercent: 15, resetAt: nil)
-    private let weekly = QuotaWindow(id: "7d", title: "Weekly limit", remainingPercent: 5, resetAt: nil)
+    private let fiveHour = QuotaWindow(id: "5h", title: "5-hour", remainingPercent: 15, resetAt: nil)
+    private let weekly = QuotaWindow(id: "7d", title: "Weekly", remainingPercent: 5, resetAt: nil)
 
     @Test func resetThenLowWindow() {
         #expect(UsageStore.notificationBody(reset: true, credit: false, low: [(fiveHour, 20)])
