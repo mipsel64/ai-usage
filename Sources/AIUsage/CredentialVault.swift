@@ -39,8 +39,9 @@ final class CredentialVault: CredentialVaulting, @unchecked Sendable {
     private let directory: URL
     private let legacy: (any LegacyCredentialReading)?
     private let lock = NSLock()
-    /// Counts changes, so that a Keychain move that waited for a dialog never overwrites a later store or remove. Guarded by `lock`.
-    private var changes = 0
+    /// Counts the changes of each provider file, so that a Keychain move that waited for a dialog never overwrites a later store or remove.
+    /// Guarded by `lock`.
+    private var changes: [String: Int] = [:]
 
     init(directory: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(homeRelativeDirectory, isDirectory: true),
@@ -53,14 +54,14 @@ final class CredentialVault: CredentialVaulting, @unchecked Sendable {
         let name = try Self.fileName(for: id)
         let data = try Self.contents(value)
         try lock.withLock {
-            changes += 1
             try write(data, name: name)
+            changes[name, default: 0] += 1
         }
     }
 
     func read(_ id: ProviderID, interactive: Bool) async throws -> String {
         let name = try Self.fileName(for: id)
-        let (stored, observed) = try lock.withLock { (try readFile(name), changes) }
+        let (stored, observed) = try lock.withLock { (try readFile(name), changes[name, default: 0]) }
         if let stored { return stored }
         guard let legacy else { throw QuotaError.notConfigured }
         let value: String
@@ -72,13 +73,13 @@ final class CredentialVault: CredentialVaulting, @unchecked Sendable {
             throw error
         }
         return try lock.withLock {
-            guard changes == observed else {
+            guard changes[name, default: 0] == observed else {
                 guard let stored = try readFile(name) else { throw QuotaError.notConfigured }
                 return stored
             }
             let data = try Self.contents(value)
-            changes += 1
             try write(data, name: name)
+            changes[name, default: 0] += 1
             try? legacy.remove(id)
             return value
         }
@@ -90,11 +91,10 @@ final class CredentialVault: CredentialVaulting, @unchecked Sendable {
             let directory = try openDirectory(create: false)
             defer { if let directory { close(directory) } }
             try legacy?.remove(id)
-            changes += 1
+            changes[name, default: 0] += 1
             guard let directory else { return }
-            for entry in [name, Self.temporaryName(name)] {
-                guard unlinkat(directory, entry, 0) == 0 || errno == ENOENT else { throw VaultError.inaccessible }
-            }
+            try Self.removeTemporaryFiles(of: name, in: directory)
+            guard unlinkat(directory, name, 0) == 0 || errno == ENOENT else { throw VaultError.inaccessible }
         }
     }
 
@@ -107,7 +107,27 @@ final class CredentialVault: CredentialVaulting, @unchecked Sendable {
         return id.rawValue
     }
 
-    private static func temporaryName(_ name: String) -> String { ".\(name).tmp" }
+    /// Deletes the temporary files of one provider that an interrupted store left. Call with `lock` held.
+    private static func removeTemporaryFiles(of name: String, in directory: Int32) throws {
+        let listing = dup(directory)
+        guard listing >= 0 else { throw VaultError.inaccessible }
+        guard let stream = fdopendir(listing) else {
+            close(listing)
+            throw VaultError.inaccessible
+        }
+        defer { closedir(stream) }
+        rewinddir(stream)
+        let prefix = ".\(name).", suffix = ".tmp"
+        var stale: [String] = []
+        while let entry = readdir(stream) {
+            let length = Int(entry.pointee.d_namlen)
+            let entryName = withUnsafeBytes(of: entry.pointee.d_name) { String(decoding: $0.prefix(length), as: UTF8.self) }
+            if entryName.hasPrefix(prefix), entryName.hasSuffix(suffix) { stale.append(entryName) }
+        }
+        for entry in stale {
+            guard unlinkat(directory, entry, 0) == 0 || errno == ENOENT else { throw VaultError.inaccessible }
+        }
+    }
 
     /// Refuses a value that `read` would refuse, before any file changes.
     private static func contents(_ value: String) throws -> Data {
@@ -169,9 +189,9 @@ final class CredentialVault: CredentialVaulting, @unchecked Sendable {
     private func write(_ data: Data, name: String) throws {
         guard let directory = try openDirectory(create: true) else { throw VaultError.inaccessible }
         defer { close(directory) }
-        let temporary = Self.temporaryName(name)
-        // A crash can leave the temporary file of an earlier store.
-        guard unlinkat(directory, temporary, 0) == 0 || errno == ENOENT else { throw VaultError.inaccessible }
+        // A crash can leave temporary files of an earlier store; a unique name keeps another writer's file from being published.
+        try Self.removeTemporaryFiles(of: name, in: directory)
+        let temporary = ".\(name).\(UUID().uuidString).tmp"
         let descriptor = openat(directory, temporary, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, Self.privateFileMode)
         guard descriptor >= 0 else { throw VaultError.inaccessible }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
