@@ -4,6 +4,8 @@ import SwiftUI
 @MainActor
 struct ProviderAccountHeader: View {
     let provider: QuotaProvider
+    let accountHost: String
+    let openAccountPage: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -17,6 +19,13 @@ struct ProviderAccountHeader: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            Spacer(minLength: 12)
+            Button("Usage Portal", systemImage: "arrow.up.right", action: openAccountPage)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .labelStyle(.titleAndIcon)
+                .accessibilityHint("Opens \(accountHost) in your default browser.")
+                .help("Opens \(accountHost) in your default browser.")
         }
     }
 }
