@@ -30,6 +30,47 @@ struct ProviderLifecycleTests {
         #expect(UsageStore(providers: [provider], defaults: defaults).states[id]?.snapshot == nil)
     }
 
+    @Test func rejectedReplacementKeepsLastVerifiedQuota() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let reading = QuotaSnapshot(windows: [.init(id: "week", title: "Week", remainingPercent: 37, resetAt: nil)], observedAt: .now)
+        let provider = QuotaProvider(id: id, displayName: "Plan", accountURL: account, connection: .apiKey, reset: .automaticOnly) { _ in
+            throw QuotaError.unauthorized
+        }
+        let empty = UsageStore(providers: [provider], defaults: defaults)
+        await #expect(throws: QuotaError.unauthorized) { try await empty.connect(id, secret: "rejected") }
+        #expect(empty.states[id]?.connected == false)
+        defaults.set(true, forKey: "connected.\(id.rawValue)")
+        defaults.set(try JSONEncoder().encode(reading), forKey: "snapshot.\(id.rawValue)")
+        let store = UsageStore(providers: [provider], defaults: defaults)
+        await #expect(throws: QuotaError.unauthorized) { try await store.connect(id, secret: "rejected") }
+        #expect(store.states[id]?.snapshot == reading)
+        #expect(UsageStore(providers: [provider], defaults: defaults).states[id]?.snapshot == reading)
+    }
+
+    @Test func switchingLocalFeedDoesNotReuseAnotherSourcesQuota() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let reading = QuotaSnapshot(windows: [.init(id: "hour", title: "Hour", remainingPercent: 20, resetAt: nil)], observedAt: .now)
+        let provider = QuotaProvider(id: id, displayName: "Local", accountURL: account,
+                                     connection: .statusLine(toolName: "Local", helperName: "capture", desktopPlugin: true),
+                                     reset: .automaticOnly) { access in
+            guard case .local = access else { throw QuotaError.notConfigured }
+            return reading
+        }
+        let store = UsageStore(providers: [provider], defaults: defaults)
+        try await store.connect(id)
+        #expect(store.states[id]?.snapshot == reading)
+        try await store.connect(id, desktopFeed: true)
+        #expect(store.states[id]?.snapshot == nil)
+        let restored = UsageStore(providers: [provider], defaults: defaults)
+        await restored.refresh(id)
+        #expect(restored.usesDesktopFeed(id))
+        #expect(restored.states[id]?.snapshot == nil)
+        try await restored.connect(id)
+        #expect(restored.states[id]?.snapshot == reading)
+    }
+
     @Test func disconnectDiscardsAnOutstandingRead() async throws {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -77,9 +118,106 @@ struct ProviderLifecycleTests {
         #expect(keys.count == 2 && keys[0] == keys[1])
     }
 
+    @Test func refreshUsesKeychainInteractionOnlyWhenRequested() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let snapshot = QuotaSnapshot(windows: [.init(id: "hour", title: "Hourly", remainingPercent: 53, resetAt: nil)], observedAt: .now)
+        let provider = QuotaProvider(id: id, displayName: "Plan", accountURL: account, connection: .apiKey, reset: .automaticOnly) { _ in snapshot }
+        let vault = RecordingCredentialVault()
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
+        try await store.connect(id, secret: "secret")
+
+        await store.refresh(id)
+        #expect(vault.readInteractions == [false])
+
+        await store.refresh(id, interactive: true)
+        #expect(vault.readInteractions == [false, true])
+    }
+
+    @Test func redeemResetAllowsKeychainInteractionButRefreshesAutomatically() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let snapshot = QuotaSnapshot(
+            windows: [.init(id: "week", title: "Weekly", remainingPercent: 0, resetAt: nil)],
+            observedAt: .now,
+            resetCredits: ResetCredits(availableCount: 1, nextID: "credit", nextTitle: "Weekly reset", nextExpiry: nil)
+        )
+        let provider = QuotaProvider(
+            id: id,
+            displayName: "Plan",
+            accountURL: account,
+            connection: .apiKey,
+            reset: .banked(website: account) { _, _, _ in .reset }
+        ) { _ in snapshot }
+        let vault = RecordingCredentialVault()
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
+        try await store.connect(id, secret: "secret")
+
+        let result = try await store.redeemReset(id, creditID: "credit")
+
+        #expect(result == "The provider confirmed the reset.")
+        #expect(vault.readInteractions == [true, false])
+    }
+
+    @Test func failedAutomaticKeychainReadKeepsLastGoodQuota() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let snapshot = QuotaSnapshot(windows: [.init(id: "hour", title: "Hourly", remainingPercent: 53, resetAt: nil)], observedAt: .now)
+        let provider = QuotaProvider(id: id, displayName: "Plan", accountURL: account, connection: .apiKey, reset: .automaticOnly) { _ in snapshot }
+        let vault = RecordingCredentialVault()
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
+        try await store.connect(id, secret: "secret")
+        vault.failReads(with: VaultError.inaccessible)
+
+        await store.refresh(id)
+
+        #expect(vault.readInteractions == [false])
+        #expect(store.states[id]?.snapshot == snapshot)
+        #expect(store.states[id]?.message == VaultError.inaccessible.localizedDescription)
+        #expect(store.states[id]?.message?.contains("secret") == false)
+    }
+
     private func preferences() -> (UserDefaults, String) {
         let suite = "AIUsage.Tests.\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)
+    }
+}
+
+private final class RecordingCredentialVault: CredentialVaulting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [ProviderID: String] = [:]
+    private var interactions: [Bool] = []
+    private var readError: (any Error)?
+
+    var readInteractions: [Bool] {
+        withLock { interactions }
+    }
+
+    func store(_ value: String, for id: ProviderID) throws {
+        withLock { values[id] = value }
+    }
+
+    func read(_ id: ProviderID, interactive: Bool) async throws -> String {
+        try withLock {
+            interactions.append(interactive)
+            if let readError { throw readError }
+            guard let value = values[id] else { throw QuotaError.notConfigured }
+            return value
+        }
+    }
+
+    func remove(_ id: ProviderID) throws {
+        withLock { values[id] = nil }
+    }
+
+    func failReads(with error: any Error) {
+        withLock { readError = error }
+    }
+
+    private func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
     }
 }
 

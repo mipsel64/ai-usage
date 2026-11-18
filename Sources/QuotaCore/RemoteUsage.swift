@@ -15,6 +15,10 @@ public enum RemoteUsage {
         )
     }
 
+    public static func defaultTransport() -> any RemoteUsageTransport {
+        URLSessionRemoteUsageTransport(configuration: makeConfiguration())
+    }
+
     static func makeConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -73,15 +77,6 @@ public enum RemoteUsage {
         credential: String,
         transport: RemoteUsageTransport
     ) async throws -> Data {
-        guard endpoint.scheme?.lowercased() == "https",
-              let host = endpoint.host,
-              !host.isEmpty,
-              endpoint.user == nil,
-              endpoint.password == nil
-        else {
-            throw QuotaError.unavailable
-        }
-
         let key = credential.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw QuotaError.notConfigured }
         guard key.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
@@ -97,6 +92,34 @@ public enum RemoteUsage {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
 
+        let response = try await response(for: request, transport: transport)
+        guard let statusCode = response.statusCode else { throw QuotaError.unavailable }
+        switch statusCode {
+        case 200 ... 299:
+            return response.body
+        case 401, 403:
+            throw QuotaError.unauthorized
+        case 429:
+            throw QuotaError.rateLimited
+        default:
+            throw QuotaError.unavailable
+        }
+    }
+
+    static func response(
+        for request: URLRequest,
+        transport: RemoteUsageTransport
+    ) async throws -> RemoteUsageTransportResponse {
+        guard let endpoint = request.url,
+              endpoint.scheme?.lowercased() == "https",
+              let host = endpoint.host,
+              !host.isEmpty,
+              endpoint.user == nil,
+              endpoint.password == nil
+        else {
+            throw QuotaError.unavailable
+        }
+
         let response: RemoteUsageTransportResponse
         do {
             response = try await transport.response(for: request)
@@ -110,10 +133,21 @@ public enum RemoteUsage {
             throw QuotaError.unavailable
         }
 
+        guard response.body.count <= maximumResponseBytes else {
+            throw QuotaError.invalidResponse
+        }
+        return response
+    }
+
+    static func execute(
+        _ request: URLRequest,
+        transport: RemoteUsageTransport
+    ) async throws -> Data {
+        let response = try await response(for: request, transport: transport)
         guard let statusCode = response.statusCode else { throw QuotaError.unavailable }
         switch statusCode {
         case 200 ... 299:
-            break
+            return response.body
         case 401, 403:
             throw QuotaError.unauthorized
         case 429:
@@ -121,10 +155,6 @@ public enum RemoteUsage {
         default:
             throw QuotaError.unavailable
         }
-        guard response.body.count <= maximumResponseBytes else {
-            throw QuotaError.invalidResponse
-        }
-        return response.body
     }
 
     private static func decodeZai(_ body: Data, observedAt: Date) throws -> QuotaSnapshot {
@@ -189,7 +219,6 @@ public enum RemoteUsage {
             (.fiveHour, response.usages.fiveHour),
             (.weekly, response.usages.weekly),
             (.monthlyTotal, response.usages.monthlyTotal),
-            (.monthlyCode, response.usages.monthlyCode),
         ]
 
         var windows: [QuotaWindow] = []
@@ -229,19 +258,28 @@ public enum RemoteUsage {
     }
 }
 
-protocol RemoteUsageTransport {
+public protocol RemoteUsageTransport: Sendable {
     func response(for request: URLRequest) async throws -> RemoteUsageTransportResponse
 }
 
-struct RemoteUsageTransportResponse {
-    let statusCode: Int?
-    let body: Data
+public struct RemoteUsageTransportResponse: Sendable {
+    public let statusCode: Int?
+    public let body: Data
+
+    public init(statusCode: Int?, body: Data) {
+        self.statusCode = statusCode
+        self.body = body
+    }
 }
 
-struct URLSessionRemoteUsageTransport: RemoteUsageTransport {
+public struct URLSessionRemoteUsageTransport: RemoteUsageTransport {
     let configuration: URLSessionConfiguration
 
-    func response(for request: URLRequest) async throws -> RemoteUsageTransportResponse {
+    public init(configuration: URLSessionConfiguration) {
+        self.configuration = configuration
+    }
+
+    public func response(for request: URLRequest) async throws -> RemoteUsageTransportResponse {
         let session = URLSession(
             configuration: configuration,
             delegate: RedirectDenier(),
@@ -252,10 +290,6 @@ struct URLSessionRemoteUsageTransport: RemoteUsageTransport {
         let (bytes, response) = try await session.bytes(for: request)
         guard let response = response as? HTTPURLResponse else {
             return RemoteUsageTransportResponse(statusCode: nil, body: Data())
-        }
-        guard (200 ... 299).contains(response.statusCode) else {
-            // RedirectDenier never forwards the credential to a redirected request.
-            return RemoteUsageTransportResponse(statusCode: response.statusCode, body: Data())
         }
         if response.expectedContentLength > Int64(RemoteUsage.maximumResponseBytes) {
             throw QuotaError.invalidResponse
@@ -394,13 +428,11 @@ private struct KimiUsages: Decodable {
     let fiveHour: KimiQuotaEntry?
     let weekly: KimiQuotaEntry?
     let monthlyTotal: KimiQuotaEntry?
-    let monthlyCode: KimiQuotaEntry?
 
     private enum CodingKeys: String, CodingKey {
         case fiveHour = "limit_5h"
         case weekly = "limit_7d"
         case monthlyTotal = "limit_month_total"
-        case monthlyCode = "limit_month_code"
     }
 }
 
@@ -438,14 +470,12 @@ private enum KimiWindowKind {
     case fiveHour
     case weekly
     case monthlyTotal
-    case monthlyCode
 
     var id: String {
         switch self {
         case .fiveHour: return "kimi-5h"
         case .weekly: return "kimi-weekly"
         case .monthlyTotal: return "kimi-monthly-total"
-        case .monthlyCode: return "kimi-monthly-code"
         }
     }
 
@@ -453,8 +483,7 @@ private enum KimiWindowKind {
         switch self {
         case .fiveHour: return "5-hour quota"
         case .weekly: return "Weekly quota"
-        case .monthlyTotal: return "Monthly total quota"
-        case .monthlyCode: return "Monthly coding quota"
+        case .monthlyTotal: return "Monthly quota"
         }
     }
 }

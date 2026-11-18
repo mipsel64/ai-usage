@@ -1,15 +1,18 @@
+import Darwin
 import Foundation
 
-/// Reads the local snapshot captured from Claude Code's official status-line JSON.
-/// Contract: https://code.claude.com/docs/en/statusline#available-data
+/// Reads local quota observations from Claude Code's status line or Desktop plugin.
 public enum ClaudeUsage {
     static let maximumSnapshotAge: TimeInterval = 5 * 60
     static let maximumSnapshotBytes = 64 * 1024
     private static let allowedFutureSkew: TimeInterval = 60
 
-    /// Returns a recent snapshot. Missing, malformed, expired, or stale data is never presented as fresh.
-    public static func read() throws -> QuotaSnapshot {
-        try read(from: defaultSnapshotURL(), now: Date())
+    static func read(_ access: ProviderAccess) throws -> QuotaSnapshot {
+        switch access {
+        case .local: try read(from: defaultSnapshotURL(), now: Date())
+        case .desktopFeed: try readDesktop(from: defaultSnapshotURL("claude-desktop.json"), now: Date())
+        default: throw QuotaError.notConfigured
+        }
     }
 
     /// Consumes one status-line payload, persists only its quota data, and returns a standalone status line.
@@ -60,6 +63,25 @@ public enum ClaudeUsage {
             throw QuotaError.invalidResponse
         }
         return try validatedSnapshot(snapshot, now: now)
+    }
+
+    static func readDesktop(from url: URL, now: Date) throws -> QuotaSnapshot {
+        let data = try readBounded(from: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        guard let feed = try? decoder.decode(DesktopFeed.self, from: data),
+              (1...2).contains(feed.rateLimits.count) else { throw QuotaError.invalidResponse }
+        let windows = try feed.rateLimits.map { limit in
+            let title: String
+            switch limit.kind {
+            case "five_hour": title = "5-hour limit"
+            case "seven_day": title = "7-day limit"
+            default: throw QuotaError.invalidResponse
+            }
+            guard (0...100).contains(limit.percentUsed) else { throw QuotaError.invalidResponse }
+            return QuotaWindow(id: limit.kind, title: title, remainingPercent: 100 - limit.percentUsed, resetAt: limit.resetsAt)
+        }
+        return try validatedSnapshot(QuotaSnapshot(windows: windows, observedAt: feed.observedAt), now: now)
     }
 
     static func validatedSnapshot(_ snapshot: QuotaSnapshot, now: Date) throws -> QuotaSnapshot {
@@ -155,7 +177,7 @@ public enum ClaudeUsage {
         return "Claude " + parts.joined(separator: " · ")
     }
 
-    private static func defaultSnapshotURL() throws -> URL {
+    private static func defaultSnapshotURL(_ filename: String = "claude.json") throws -> URL {
         do {
             return try FileManager.default.url(
                 for: .applicationSupportDirectory,
@@ -164,25 +186,25 @@ public enum ClaudeUsage {
                 create: true
             )
             .appendingPathComponent("ai-usage", isDirectory: true)
-            .appendingPathComponent("claude.json")
+            .appendingPathComponent(filename)
         } catch {
             throw QuotaError.unavailable
         }
     }
 
     private static func readBounded(from url: URL) throws -> Data {
-        let handle: FileHandle
-        do {
-            handle = try FileHandle(forReadingFrom: url)
-        } catch {
-            let error = error as NSError
-            if error.domain == NSCocoaErrorDomain,
-               error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError {
-                throw QuotaError.notConfigured
-            }
+        let fd = try url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { throw QuotaError.unavailable }
+            let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+            guard fd >= 0 else { throw errno == ENOENT ? QuotaError.notConfigured : QuotaError.unavailable }
+            return fd
+        }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid() else {
             throw QuotaError.unavailable
         }
-        defer { try? handle.close() }
 
         do {
             let data = try handle.read(upToCount: maximumSnapshotBytes + 1) ?? Data()
@@ -194,6 +216,16 @@ public enum ClaudeUsage {
             throw QuotaError.unavailable
         }
     }
+}
+
+private struct DesktopFeed: Decodable {
+    struct Limit: Decodable {
+        let kind: String
+        let percentUsed: Double
+        let resetsAt: Date?
+    }
+    let rateLimits: [Limit]
+    let observedAt: Date
 }
 
 private struct StatusLinePayload: Decodable {

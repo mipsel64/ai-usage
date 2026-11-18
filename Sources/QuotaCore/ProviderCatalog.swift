@@ -1,19 +1,28 @@
 import Foundation
 
 public enum ProviderConnection: Sendable {
-    case statusLine(toolName: String, helperName: String)
+    case statusLine(toolName: String, helperName: String, desktopPlugin: Bool = false)
     case signedExecutable(requirement: SignedExecutable)
     case apiKey
+    case browserLogin
+    case oauth
 }
 
 public enum ProviderAccess: Sendable {
     case local
+    case desktopFeed
     case executable(URL)
     case apiKey(String)
+    case oauth(OAuthTokens)
 
     public func key() throws -> String {
         guard case let .apiKey(value) = self else { throw QuotaError.notConfigured }
         return value
+    }
+
+    public func oauthTokens() throws -> OAuthTokens {
+        guard case let .oauth(tokens) = self else { throw QuotaError.notConfigured }
+        return tokens
     }
 
     public func binary() throws -> URL {
@@ -68,20 +77,25 @@ public enum ProviderCatalog {
 
     public static let all: [QuotaProvider] = [
         QuotaProvider(id: .claude, displayName: "Claude", accountURL: claudeUsage,
-                      connection: .statusLine(toolName: "Claude Code", helperName: "claude-quota-capture"),
-                      reset: .website(claudeUsage)) { _ in try ClaudeUsage.read() },
+                      connection: .oauth, reset: .website(claudeUsage)) {
+            try await ClaudeRemoteUsage.fetch(tokens: $0.oauthTokens())
+        },
         QuotaProvider(id: .codex, displayName: "Codex", accountURL: codexUsage,
-                      connection: .signedExecutable(requirement: CodexUsage.signatureRequirement),
+                      connection: .oauth,
                       reset: .banked(website: codexUsage) { access, id, key in
-                          try await CodexUsage.redeem(executable: access.binary(), creditID: id, idempotencyKey: key)
-                      }) { try await CodexUsage.fetch(executable: $0.binary()) },
+                          try await CodexRemoteUsage.redeem(
+                              tokens: access.oauthTokens(),
+                              creditID: id,
+                              idempotencyKey: key
+                          )
+                      }) { try await CodexRemoteUsage.fetch(tokens: $0.oauthTokens()) },
         QuotaProvider(id: .zai, displayName: "Z.ai", accountURL: zaiUsage,
-                      connection: .apiKey, reset: .website(zaiUsage)) {
+                      connection: .browserLogin, reset: .website(zaiUsage)) {
             try await RemoteUsage.fetch(provider: .zai, credential: $0.key())
         },
         QuotaProvider(id: .kimi, displayName: "Kimi", accountURL: URL(string: "https://www.kimi.com/code/console")!,
-                      connection: .apiKey, reset: .automaticOnly) {
-            try await RemoteUsage.fetch(provider: .kimi, credential: $0.key())
+                      connection: .oauth, reset: .automaticOnly) {
+            try await RemoteUsage.fetch(provider: .kimi, credential: $0.oauthTokens().accessToken)
         },
     ]
 }

@@ -17,6 +17,36 @@ import Testing
         try? FileManager.default.removeItem(at: directory)
     }
 
+    @Test func desktopReadingPreservesObservationAndResetDeadline() throws {
+        let now = Date(timeIntervalSince1970: 1_738_000_000)
+        try Data("""
+        {"observedAt":1737999970,"rateLimits":[
+          {"kind":"five_hour","percentUsed":12.5,"resetsAt":1738000120},
+          {"kind":"seven_day","percentUsed":0}]}
+        """.utf8).write(to: snapshotURL)
+        let result = try ClaudeUsage.readDesktop(from: snapshotURL, now: now)
+        #expect(result.observedAt == now.addingTimeInterval(-30))
+        #expect(result.windows == [
+            .init(id: "five_hour", title: "5-hour limit", remainingPercent: 87.5, resetAt: now.addingTimeInterval(120)),
+            .init(id: "seven_day", title: "7-day limit", remainingPercent: 100, resetAt: nil)
+        ])
+        #expect(throws: QuotaError.unavailable) {
+            try ClaudeUsage.readDesktop(from: snapshotURL, now: now.addingTimeInterval(300))
+        }
+    }
+
+    @Test func incompleteDesktopWriteIsNotAnObservation() throws {
+        try Data(#"{"rateLimits":[{"kind":"five_hour","percentUsed":"#.utf8).write(to: snapshotURL)
+        #expect(throws: QuotaError.invalidResponse) { try ClaudeUsage.readDesktop(from: snapshotURL, now: .now) }
+    }
+
+    @Test func desktopFeedDoesNotFollowASymbolicLink() throws {
+        let target = directory.appendingPathComponent("another-file")
+        try Data("{}".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(at: snapshotURL, withDestinationURL: target)
+        #expect(throws: QuotaError.unavailable) { try ClaudeUsage.readDesktop(from: snapshotURL, now: .now) }
+    }
+
     @Test func captureNormalizesOnlyQuotaFields() throws {
         let observedAt = Date(timeIntervalSince1970: 1_738_000_000)
         let fiveHourReset = Date(timeIntervalSince1970: 1_738_001_000)

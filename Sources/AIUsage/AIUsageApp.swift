@@ -14,6 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationWillTerminate(_ notification: Notification) { monitor?.cancel() }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            ZaiCallbackRouter.shared.receive(url)
+        }
+    }
+
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         [.banner, .list]
@@ -33,7 +39,7 @@ struct AIUsageApp: App {
         }.menuBarExtraStyle(.window)
         Settings {
             ConnectionView(store: delegate.store)
-                .navigationTitle("AI Usage Connections")
+                .navigationTitle("AI Usage Accounts")
         }
     }
 }
