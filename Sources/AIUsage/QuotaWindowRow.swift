@@ -4,6 +4,7 @@ import SwiftUI
 struct QuotaWindowRow: View {
     let window: QuotaWindow
     let now: Date
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -49,6 +50,7 @@ struct QuotaWindowRow: View {
                 .progressViewStyle(.linear)
                 .controlSize(.small)
                 .tint(UsageVisuals.quotaColor(remaining: window.remainingPercent))
+                .animation(reduceMotion ? nil : .smooth, value: window.remainingPercent)
                 .accessibilityLabel("\(window.title) remaining quota")
                 .accessibilityValue("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0...1)))) percent")
         }
@@ -58,6 +60,8 @@ struct QuotaWindowRow: View {
         Text(remainingText)
             .font(.callout.weight(.semibold))
             .monospacedDigit()
+            .contentTransition(.numericText(value: window.remainingPercent))
+            .animation(reduceMotion ? nil : .snappy, value: window.remainingPercent)
     }
 
     private var remainingText: String {
