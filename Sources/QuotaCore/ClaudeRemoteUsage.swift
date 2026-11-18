@@ -3,6 +3,7 @@ import Foundation
 /// Direct subscription usage from Claude Code's first-party OAuth endpoint.
 /// The route is not publicly documented; its response contract is cross-checked against
 /// https://github.com/FullFran/claudeops-tui/blob/main/docs/oauth-usage-endpoint.md
+/// and, for the model-scoped weekly entries of `limits[]`, https://github.com/can1357/oh-my-pi/pull/4344
 public enum ClaudeRemoteUsage {
     private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
@@ -53,6 +54,10 @@ public enum ClaudeRemoteUsage {
         var windows = try values.compactMap { id, title, value in
             try value?.window(id: id, title: title)
         }
+        for limit in payload.limits?.entries ?? [] {
+            guard let window = try limit.window(), !windows.contains(where: { $0.id == window.id }) else { continue }
+            windows.append(window)
+        }
         if let extra = payload.extraUsage, extra.isEnabled != false, let utilization = extra.utilization {
             guard utilization.isFinite, (0 ... 100).contains(utilization) else { throw QuotaError.invalidResponse }
             windows.append(QuotaWindow(
@@ -73,6 +78,7 @@ private struct ClaudeUsagePayload: Decodable {
     let sevenDayOpus: ClaudeUsageWindow?
     let sevenDaySonnet: ClaudeUsageWindow?
     let extraUsage: ClaudeExtraUsage?
+    let limits: ClaudeLimits?
 
     enum CodingKeys: String, CodingKey {
         case fiveHour = "five_hour"
@@ -80,6 +86,72 @@ private struct ClaudeUsagePayload: Decodable {
         case sevenDayOpus = "seven_day_opus"
         case sevenDaySonnet = "seven_day_sonnet"
         case extraUsage = "extra_usage"
+        case limits
+    }
+}
+
+/// `limits[]` is undocumented and still changing, so a value that is not an array is ignored.
+private struct ClaudeLimits: Decodable {
+    let entries: [ClaudeScopedWeeklyLimit]
+
+    init(from decoder: Decoder) throws {
+        entries = (try? decoder.singleValueContainer().decode([ClaudeScopedWeeklyLimit].self)) ?? []
+    }
+}
+
+/// One `limits[]` entry. Decoding never throws, so one unknown entry cannot drop the others;
+/// `modelName` is nil for each entry that is not a model-scoped weekly limit.
+private struct ClaudeScopedWeeklyLimit: Decodable {
+    private static let maxModelNameLength = 40
+
+    let modelName: String?
+    let percent: Double?
+    let resetsAt: String?
+    let hasMalformedReset: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case kind, percent, scope
+        case resetsAt = "resets_at"
+    }
+
+    enum ScopeKeys: String, CodingKey {
+        case model, surface
+    }
+
+    enum ModelKeys: String, CodingKey {
+        case displayName = "display_name"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try? decoder.container(keyedBy: CodingKeys.self)
+        let scope = try? container?.nestedContainer(keyedBy: ScopeKeys.self, forKey: .scope)
+        let model = try? scope?.nestedContainer(keyedBy: ModelKeys.self, forKey: .model)
+        let isSurfaceScoped = scope.map { $0.contains(.surface) && (try? $0.decodeNil(forKey: .surface)) != true } ?? false
+        if let container, (try? container.decode(String.self, forKey: .kind)) == "weekly_scoped", !isSurfaceScoped,
+           let name = AccountIdentity.sanitizedText(try? model?.decode(String.self, forKey: .displayName)) {
+            modelName = String(name.prefix(Self.maxModelNameLength)).trimmingCharacters(in: .whitespaces)
+        } else {
+            modelName = nil
+        }
+        percent = try? container?.decode(Double.self, forKey: .percent)
+        do {
+            resetsAt = try container?.decodeIfPresent(String.self, forKey: .resetsAt)
+            hasMalformedReset = false
+        } catch {
+            resetsAt = nil
+            hasMalformedReset = true
+        }
+    }
+
+    func window() throws -> QuotaWindow? {
+        guard let modelName else { return nil }
+        let slug = modelName.lowercased()
+            .replacing(#/[^a-z0-9]+/#, with: "_")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        guard !slug.isEmpty else { return nil }
+        guard let percent, !hasMalformedReset else { throw QuotaError.invalidResponse }
+        return try ClaudeUsageWindow(utilization: percent, resetsAt: resetsAt)
+            .window(id: "seven_day_\(slug)", title: "7-day \(modelName) limit")
     }
 }
 
