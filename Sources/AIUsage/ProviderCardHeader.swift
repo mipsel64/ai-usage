@@ -49,17 +49,14 @@ struct ProviderCardHeader: View {
             )
         } else if needsAuthentication {
             Button("Sign In", action: onConnect)
-                .buttonStyle(.plain)
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 2)
-                .background(.blue, in: .capsule)
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
                 .controlSize(.small)
                 .accessibilityLabel("Sign in to \(provider.displayName)")
         } else {
             Button("Connect", action: onConnect)
                 .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
                 .controlSize(.small)
                 .accessibilityLabel("Connect \(provider.displayName)")
         }

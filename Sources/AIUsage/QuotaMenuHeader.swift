@@ -26,8 +26,8 @@ struct QuotaMenuHeader: View {
             Button("Refresh All", systemImage: "arrow.clockwise", action: refreshAll)
                 .labelStyle(.iconOnly)
                 .usageActionStyle()
+                .buttonBorderShape(.circle)
                 .controlSize(.small)
-                .frame(width: 26, height: 26)
                 .accessibilityLabel("Refresh All")
                 .help("Refresh all connected providers")
         }
