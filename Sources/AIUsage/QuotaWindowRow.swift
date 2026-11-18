@@ -13,14 +13,14 @@ struct QuotaWindowRow: View {
                     .lineLimit(1)
                 if let resetAt = window.resetAt {
                     Text(resetCountdown(from: now, to: resetAt))
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                         .lineLimit(1)
                 }
                 Spacer(minLength: 6)
                 Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0...1))))%")
-                    .font(.system(.callout, design: .rounded).weight(.semibold))
+                    .font(.callout.weight(.semibold))
                     .monospacedDigit()
             }
 

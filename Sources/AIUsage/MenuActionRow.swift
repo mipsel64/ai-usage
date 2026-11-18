@@ -27,8 +27,8 @@ struct MenuActionRow: View {
                 }
             }
             .padding(.horizontal, 10)
-            .frame(minHeight: 36)
-            .background(hovering ? Color.primary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .frame(minHeight: 28)
+            .background(hovering ? Color.primary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

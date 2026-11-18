@@ -25,6 +25,6 @@ enum UsageVisuals {
     static func quotaColor(remaining: Double) -> Color {
         if remaining <= 5 { return .red }
         if remaining <= 20 { return .orange }
-        return .green
+        return .primary
     }
 }
