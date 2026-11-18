@@ -267,14 +267,14 @@ final class UsageStore {
             states[id]?.needsAuthentication = false
             defaults.set(try JSONEncoder().encode(reading), forKey: "snapshot.\(id.rawValue)")
             states[id]?.loading = false
-            if provider.readAccount != nil && !loadedAccounts.contains(id) {
-                loadedAccounts.insert(id)
-                await updateAccount(for: provider, access: readingAccess, generation: generation)
-            }
             if notificationsEnabled, let last = state.snapshot, reading.observedAt > last.observedAt {
                 let reset = !reading.refreshedWindows(since: last).isEmpty
                 let credit = last.resetCredits.flatMap { before in reading.resetCredits.map { $0.availableCount > before.availableCount } } ?? false
                 if reset || credit { await postNotification(provider: provider, reset: reset, credit: credit) }
+            }
+            if provider.readAccount != nil && !loadedAccounts.contains(id) {
+                loadedAccounts.insert(id)
+                await updateAccount(for: provider, access: readingAccess, generation: generation)
             }
         } catch {
             guard generation == generations[id] else { return }

@@ -142,7 +142,7 @@ struct AccountIdentityStoreTests {
         #expect(store.states[id]?.loading == false)
     }
 
-    @Test func quotaStateIsFinalBeforeIdentityReadFinishes() async throws {
+    @Test func quotaStateIsFinalBeforeIdentityReadStarts() async throws {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(true, forKey: "connected.\(id.rawValue)")
@@ -159,6 +159,7 @@ struct AccountIdentityStoreTests {
         let refresh = Task { await store.refresh(id) }
         for await _ in started.stream { }
         #expect(store.states[id]?.snapshot == snapshot)
+        #expect(defaults.data(forKey: "snapshot.\(id.rawValue)") != nil)
         #expect(store.states[id]?.message == nil)
         #expect(store.states[id]?.needsAuthentication == false)
         #expect(store.states[id]?.loading == false)
