@@ -38,19 +38,19 @@ struct RemoteUsageTests {
         #expect(snapshot.windows == [
             QuotaWindow(
                 id: "zai-5h",
-                title: "5-hour quota",
+                title: "5-hour limit",
                 remainingPercent: 87.5,
                 resetAt: Date(timeIntervalSince1970: 1_800_000_000.123)
             ),
             QuotaWindow(
                 id: "zai-weekly",
-                title: "Weekly quota",
+                title: "Weekly limit",
                 remainingPercent: 40,
                 resetAt: Date(timeIntervalSince1970: 1_800_060_000)
             ),
             QuotaWindow(
                 id: "zai-monthly-tools",
-                title: "Monthly tools quota",
+                title: "Monthly tools limit",
                 remainingPercent: 90,
                 resetAt: nil
             ),
@@ -324,19 +324,19 @@ struct RemoteUsageTests {
         #expect(snapshot.windows == [
             QuotaWindow(
                 id: "kimi-5h",
-                title: "5-hour quota",
+                title: "5-hour limit",
                 remainingPercent: 75,
                 resetAt: Date(timeIntervalSince1970: 1_800_000_000.123)
             ),
             QuotaWindow(
                 id: "kimi-weekly",
-                title: "Weekly quota",
+                title: "Weekly limit",
                 remainingPercent: 50,
                 resetAt: Date(timeIntervalSince1970: 1_800_000_000)
             ),
             QuotaWindow(
                 id: "kimi-monthly-total",
-                title: "Monthly quota",
+                title: "Monthly limit",
                 remainingPercent: 25,
                 resetAt: Date(timeIntervalSince1970: 1_800_000_000)
             ),
