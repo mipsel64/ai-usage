@@ -65,8 +65,8 @@ struct ProviderCardHeader: View {
         }
         ProviderActionsMenu(
             provider: provider,
-            canRefresh: isConnected && !needsAuthentication && state?.loading != true,
-            canRedeem: canRedeem,
+            canRefresh: !isConnecting && isConnected && !needsAuthentication && state?.loading != true,
+            canRedeem: !isConnecting && canRedeem,
             onRefresh: onRefresh,
             onShowAccounts: onShowAccounts,
             onRedeem: onRedeem

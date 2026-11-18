@@ -10,9 +10,9 @@ struct MenuPopoverBackdrop: View {
         if #available(macOS 26.0, *), !reduceTransparency {
             Color.clear
                 .glassEffect(.regular, in: .rect(cornerRadius: popoverCornerRadius))
-                .background(MenuPopoverWindow(usesGlass: true, reduceTransparency: false))
+                .background(MenuPopoverWindow(needsMaterial: false))
         } else {
-            MenuPopoverWindow(usesGlass: false, reduceTransparency: reduceTransparency)
+            MenuPopoverWindow(needsMaterial: !reduceTransparency)
                 .background {
                     if reduceTransparency {
                         Color(nsColor: .windowBackgroundColor)

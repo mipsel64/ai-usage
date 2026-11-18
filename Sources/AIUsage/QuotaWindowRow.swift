@@ -7,26 +7,29 @@ struct QuotaWindowRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ViewThatFits {
+            ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(window.title)
                         .font(.callout.weight(.medium))
                         .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                     if let resetAt = window.resetAt {
                         Text(resetCountdown(from: now, to: resetAt))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                             .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
-                    Text(remainingText).hidden()
+                    remainingLabel
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(window.title)
                             .font(.callout.weight(.medium))
                             .lineLimit(1)
-                        Text(remainingText).hidden()
+                        remainingLabel.hidden()
                     }
                     if let resetAt = window.resetAt {
                         Text(resetCountdown(from: now, to: resetAt))
@@ -36,12 +39,10 @@ struct QuotaWindowRow: View {
                             .fixedSize(horizontal: true, vertical: false)
                     }
                 }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: Alignment(horizontal: .trailing, vertical: .firstTextBaseline)) {
-                Text(remainingText)
-                    .font(.callout.weight(.semibold))
-                    .monospacedDigit()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: Alignment(horizontal: .trailing, vertical: .firstTextBaseline)) {
+                    remainingLabel
+                }
             }
 
             ProgressView(value: window.remainingPercent, total: 100)
@@ -51,6 +52,12 @@ struct QuotaWindowRow: View {
                 .accessibilityLabel("\(window.title) remaining quota")
                 .accessibilityValue("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0...1)))) percent")
         }
+    }
+
+    private var remainingLabel: some View {
+        Text(remainingText)
+            .font(.callout.weight(.semibold))
+            .monospacedDigit()
     }
 
     private var remainingText: String {
