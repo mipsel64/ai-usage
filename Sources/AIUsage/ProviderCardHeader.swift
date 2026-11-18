@@ -15,6 +15,11 @@ struct ProviderCardHeader: View {
 
     private var isConnected: Bool { state?.connected == true }
     private var needsAuthentication: Bool { state?.needsAuthentication == true }
+    private var hasConnectedStatus: Bool {
+        guard isConnected, !needsAuthentication, state?.message?.isEmpty != false,
+              let snapshot = state?.snapshot else { return false }
+        return now.timeIntervalSince(snapshot.observedAt) < 5 * 60
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -22,6 +27,7 @@ struct ProviderCardHeader: View {
             Text(provider.displayName)
                 .font(.headline)
                 .lineLimit(1)
+                .accessibilityValue(hasConnectedStatus ? "Connected" : "")
             if let credits = state?.snapshot?.resetCredits, credits.availableCount > 0 {
                 ResetCreditsBadge(count: credits.availableCount)
             }
@@ -34,31 +40,36 @@ struct ProviderCardHeader: View {
 
     @ViewBuilder
     private var trailingControl: some View {
-        if isConnecting || state?.loading == true {
+        if isConnecting {
             ProgressView()
                 .controlSize(.small)
                 .frame(width: 24, height: 24)
                 .accessibilityLabel("\(provider.displayName) activity in progress")
-        } else if isConnected && !needsAuthentication {
-            ProviderActionsMenu(
-                provider: provider,
-                canRedeem: canRedeem,
-                onRefresh: onRefresh,
-                onShowAccounts: onShowAccounts,
-                onRedeem: onRedeem
-            )
         } else if needsAuthentication {
             Button("Sign In", action: onConnect)
                 .buttonStyle(.borderedProminent)
                 .buttonBorderShape(.capsule)
                 .controlSize(.small)
                 .accessibilityLabel("Sign in to \(provider.displayName)")
-        } else {
+        } else if !isConnected {
             Button("Connect", action: onConnect)
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
                 .controlSize(.small)
                 .accessibilityLabel("Connect \(provider.displayName)")
+        } else if state?.loading == true {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 24, height: 24)
+                .accessibilityLabel("\(provider.displayName) activity in progress")
         }
+        ProviderActionsMenu(
+            provider: provider,
+            canRefresh: isConnected && !needsAuthentication && state?.loading != true,
+            canRedeem: canRedeem,
+            onRefresh: onRefresh,
+            onShowAccounts: onShowAccounts,
+            onRedeem: onRedeem
+        )
     }
 }

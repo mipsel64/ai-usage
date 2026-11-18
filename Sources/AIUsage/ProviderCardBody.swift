@@ -2,6 +2,7 @@ import QuotaCore
 import SwiftUI
 
 struct ProviderCardBody: View {
+    private let staleInterval: TimeInterval = 5 * 60
     let provider: QuotaProvider
     let state: ProviderState?
     let now: Date
@@ -16,6 +17,13 @@ struct ProviderCardBody: View {
                     .font(.caption)
                     .foregroundStyle(state?.needsAuthentication == true ? .orange : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if state?.needsAuthentication == true, let snapshot = state?.snapshot,
+               now.timeIntervalSince(snapshot.observedAt) >= staleInterval {
+                Label("Last reading \(snapshot.observedAt.formatted(date: .omitted, time: .shortened))", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
 
             if let snapshot = state?.snapshot {

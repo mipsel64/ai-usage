@@ -17,8 +17,6 @@ struct MenuPopoverWindow: NSViewRepresentable {
 
     private func configure(_ view: NSView) {
         configureMaterial(in: view)
-        view.wantsLayer = true
-        view.layer?.backgroundColor = reduceTransparency ? NSColor.windowBackgroundColor.cgColor : nil
         DispatchQueue.main.async { [weak view] in
             guard let window = view?.window else { return }
             window.isOpaque = reduceTransparency

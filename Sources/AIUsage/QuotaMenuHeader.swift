@@ -12,6 +12,13 @@ struct QuotaMenuHeader: View {
             .max()
     }
 
+    private var refreshableProviders: [QuotaProvider] {
+        store.providers.filter { provider in
+            guard let state = store.states[provider.id] else { return false }
+            return state.connected && !state.needsAuthentication && !state.loading
+        }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Text("AI Usage")
@@ -28,14 +35,15 @@ struct QuotaMenuHeader: View {
                 .usageActionStyle()
                 .buttonBorderShape(.circle)
                 .controlSize(.small)
+                .frame(width: 26, height: 26)
+                .disabled(refreshableProviders.isEmpty)
                 .accessibilityLabel("Refresh All")
                 .help("Refresh all connected providers")
         }
     }
 
     private func refreshAll() {
-        for provider in store.providers {
-            guard let state = store.states[provider.id], state.connected, !state.needsAuthentication else { continue }
+        for provider in refreshableProviders {
             Task { await store.refresh(provider.id, interactive: true) }
         }
     }
