@@ -2,6 +2,7 @@ import Foundation
 
 /// Account-scoped Codex subscription usage and earned reset credits.
 /// Endpoint and redemption contract: https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client/rate_limit_resets.rs
+/// Usage payload model: https://github.com/openai/codex/tree/main/codex-rs/codex-backend-openapi-models/src/models
 public enum CodexRemoteUsage {
     private static let usageEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
     private static let creditsEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
@@ -118,28 +119,27 @@ public enum CodexRemoteUsage {
     private static func decodeSnapshot(usage: Data, credits: Data?, observedAt: Date) throws -> QuotaSnapshot {
         let payload = try decode(CodexUsagePayload.self, from: usage)
         let inventory = try credits.map { try decode(CodexResetInventory.self, from: $0) }
-        var buckets: [(String, CodexRateBucket)] = []
+        var buckets: [(id: String, name: String?, isMain: Bool, limit: CodexRateBucket?)] = []
         if let primary = payload.rateLimit {
-            buckets.append((primary.limitID ?? "codex", primary))
+            buckets.append((primary.limitID ?? "codex", primary.limitName, true, primary))
         }
         for (index, additional) in (payload.additionalRateLimits ?? []).enumerated() {
-            buckets.append((additional.limitID ?? "additional-\(index)", additional))
+            buckets.append((additional.meteredFeature ?? "additional-\(index)", additional.limitName, false, additional.rateLimit))
         }
 
         var windows: [QuotaWindow] = []
         var identifiers = Set<String>()
-        for (fallbackID, bucket) in buckets {
-            let id = bucket.limitID ?? fallbackID
-            let title = bucket.limitName ?? (id == "codex" ? "Codex" : id)
-            if let primary = bucket.primaryWindow {
+        for (id, name, isMain, bucket) in buckets {
+            let title = name ?? (id == "codex" ? "Codex" : id)
+            if let primary = bucket?.primaryWindow {
                 let windowID = "\(id).primary"
                 guard identifiers.insert(windowID).inserted else { throw QuotaError.invalidResponse }
-                windows.append(try primary.window(id: windowID, title: "\(title) Primary"))
+                windows.append(try primary.window(id: windowID, title: codexWindowTitle(bucket: title, isMain: isMain, slot: "Primary", seconds: primary.limitWindowSeconds)))
             }
-            if let secondary = bucket.secondaryWindow {
+            if let secondary = bucket?.secondaryWindow {
                 let windowID = "\(id).secondary"
                 guard identifiers.insert(windowID).inserted else { throw QuotaError.invalidResponse }
-                windows.append(try secondary.window(id: windowID, title: "\(title) Secondary"))
+                windows.append(try secondary.window(id: windowID, title: codexWindowTitle(bucket: title, isMain: isMain, slot: "Secondary", seconds: secondary.limitWindowSeconds)))
             }
         }
         guard !windows.isEmpty else { throw QuotaError.invalidResponse }
@@ -165,7 +165,7 @@ public enum CodexRemoteUsage {
 
 private struct CodexUsagePayload: Decodable {
     let rateLimit: CodexRateBucket?
-    let additionalRateLimits: [CodexRateBucket]?
+    let additionalRateLimits: [CodexAdditionalRateLimit]?
     let rateLimitResetCredits: CodexResetSummary?
 
     enum CodingKeys: String, CodingKey {
@@ -189,13 +189,35 @@ private struct CodexRateBucket: Decodable {
     }
 }
 
+private struct CodexAdditionalRateLimit: Decodable {
+    let meteredFeature: String?
+    let limitName: String?
+    let rateLimit: CodexRateBucket?
+
+    enum CodingKeys: String, CodingKey {
+        case meteredFeature = "metered_feature"
+        case limitName = "limit_name"
+        case rateLimit = "rate_limit"
+    }
+}
+
 private struct CodexRateWindow: Decodable {
     let usedPercent: Double
+    let limitWindowSeconds: Double?
     let resetAt: Double?
 
     enum CodingKeys: String, CodingKey {
         case usedPercent = "used_percent"
+        case limitWindowSeconds = "limit_window_seconds"
         case resetAt = "reset_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        usedPercent = try container.decode(Double.self, forKey: .usedPercent)
+        // The length only names the window, so a malformed length must not reject the reading.
+        limitWindowSeconds = try? container.decodeIfPresent(Double.self, forKey: .limitWindowSeconds)
+        resetAt = try container.decodeIfPresent(Double.self, forKey: .resetAt)
     }
 
     func window(id: String, title: String) throws -> QuotaWindow {

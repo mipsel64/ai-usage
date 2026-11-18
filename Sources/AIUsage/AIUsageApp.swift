@@ -42,6 +42,8 @@ struct AIUsageApp: App {
         Settings {
             AccountsView(store: delegate.store)
         }
+        // Settings forces the preference toolbar style, which centres toolbar items; AccountsView draws the title instead.
+        .windowToolbarStyle(.unified(showsTitle: false))
     }
 
     // MenuBarExtra ignores SwiftUI font modifiers on its label, so the size is set on the NSImage.

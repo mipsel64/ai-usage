@@ -336,18 +336,19 @@ private struct CodexRateLimitsResponse: Decodable {
 
         var windows: [QuotaWindow] = []
         for (key, bucket) in buckets {
+            let isMain = key == "codex"
             let bucketID = bucket.limitId ?? key
             let bucketTitle = bucket.limitName ?? (bucketID == "codex" ? "Codex" : bucketID)
             if let primary = bucket.primary {
                 windows.append(try primary.quotaWindow(
                     id: "\(key).primary",
-                    title: "\(bucketTitle) Primary"
+                    title: codexWindowTitle(bucket: bucketTitle, isMain: isMain, slot: "Primary", seconds: primary.windowSeconds)
                 ))
             }
             if let secondary = bucket.secondary {
                 windows.append(try secondary.quotaWindow(
                     id: "\(key).secondary",
-                    title: "\(bucketTitle) Secondary"
+                    title: codexWindowTitle(bucket: bucketTitle, isMain: isMain, slot: "Secondary", seconds: secondary.windowSeconds)
                 ))
             }
         }
@@ -400,8 +401,22 @@ private struct CodexRateLimitSnapshot: Decodable {
 
 private struct CodexRateLimitWindow: Decodable {
     let usedPercent: Double
-    let windowDurationMins: Int?
+    let windowDurationMins: Double?
     let resetsAt: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case usedPercent, windowDurationMins, resetsAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        usedPercent = try container.decode(Double.self, forKey: .usedPercent)
+        // The length only names the window, so a malformed length must not reject the reading.
+        windowDurationMins = try? container.decodeIfPresent(Double.self, forKey: .windowDurationMins)
+        resetsAt = try container.decodeIfPresent(Double.self, forKey: .resetsAt)
+    }
+
+    var windowSeconds: Double? { windowDurationMins.map { $0 * 60 } }
 
     func quotaWindow(id: String, title: String) throws -> QuotaWindow {
         guard usedPercent.isFinite, (0...100).contains(usedPercent) else {
@@ -415,6 +430,25 @@ private struct CodexRateLimitWindow: Decodable {
             resetAt: resetsAt.map { Date(timeIntervalSince1970: $0) }
         )
     }
+}
+
+/// "5-hour" for the main bucket, "Weekly <name>" for another bucket, or "<name> Primary" when the length has no label.
+func codexWindowTitle(bucket: String, isMain: Bool, slot: String, seconds: Double?) -> String {
+    guard let label = windowLengthLabel(seconds: seconds) else { return "\(bucket) \(slot)" }
+    return isMain ? label : "\(label) \(bucket)"
+}
+
+func windowLengthLabel(seconds: Double?) -> String? {
+    let hour = 3_600.0
+    let day = 24 * hour
+    let weekly = 7 * day
+    let monthly = 30 * day
+    guard let seconds, seconds.isFinite, seconds > 0 else { return nil }
+    if seconds == weekly { return "Weekly" }
+    if seconds == monthly { return "Monthly" }
+    let hours = seconds / hour
+    guard hours == hours.rounded(), (1 ... 24).contains(hours) else { return nil }
+    return "\(Int(hours))-hour"
 }
 
 private struct CodexResetCreditsSummary: Decodable {

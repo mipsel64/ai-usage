@@ -22,7 +22,7 @@ struct QuotaMenu: View {
             VStack(alignment: .leading, spacing: 0) {
                 QuotaMenuHeader(store: store)
                     .padding(.leading, 12)
-                    .padding(.trailing, 6)
+                    .padding(.trailing, 11)
                     .padding(.top, 6)
                     .padding(.bottom, 8)
 
