@@ -119,27 +119,27 @@ public enum CodexRemoteUsage {
     private static func decodeSnapshot(usage: Data, credits: Data?, observedAt: Date) throws -> QuotaSnapshot {
         let payload = try decode(CodexUsagePayload.self, from: usage)
         let inventory = try credits.map { try decode(CodexResetInventory.self, from: $0) }
-        var buckets: [(id: String, name: String?, limit: CodexRateBucket?)] = []
+        var buckets: [(id: String, name: String?, isMain: Bool, limit: CodexRateBucket?)] = []
         if let primary = payload.rateLimit {
-            buckets.append((primary.limitID ?? "codex", primary.limitName, primary))
+            buckets.append((primary.limitID ?? "codex", primary.limitName, true, primary))
         }
         for (index, additional) in (payload.additionalRateLimits ?? []).enumerated() {
-            buckets.append((additional.meteredFeature ?? "additional-\(index)", additional.limitName, additional.rateLimit))
+            buckets.append((additional.meteredFeature ?? "additional-\(index)", additional.limitName, false, additional.rateLimit))
         }
 
         var windows: [QuotaWindow] = []
         var identifiers = Set<String>()
-        for (id, name, bucket) in buckets {
+        for (id, name, isMain, bucket) in buckets {
             let title = name ?? (id == "codex" ? "Codex" : id)
             if let primary = bucket?.primaryWindow {
                 let windowID = "\(id).primary"
                 guard identifiers.insert(windowID).inserted else { throw QuotaError.invalidResponse }
-                windows.append(try primary.window(id: windowID, title: codexWindowTitle(bucket: title, slot: "Primary", seconds: primary.limitWindowSeconds)))
+                windows.append(try primary.window(id: windowID, title: codexWindowTitle(bucket: title, isMain: isMain, slot: "Primary", seconds: primary.limitWindowSeconds)))
             }
             if let secondary = bucket?.secondaryWindow {
                 let windowID = "\(id).secondary"
                 guard identifiers.insert(windowID).inserted else { throw QuotaError.invalidResponse }
-                windows.append(try secondary.window(id: windowID, title: codexWindowTitle(bucket: title, slot: "Secondary", seconds: secondary.limitWindowSeconds)))
+                windows.append(try secondary.window(id: windowID, title: codexWindowTitle(bucket: title, isMain: isMain, slot: "Secondary", seconds: secondary.limitWindowSeconds)))
             }
         }
         guard !windows.isEmpty else { throw QuotaError.invalidResponse }

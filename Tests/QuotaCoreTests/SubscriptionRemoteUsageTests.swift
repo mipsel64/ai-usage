@@ -144,6 +144,12 @@ struct SubscriptionRemoteUsageTests {
         #expect(snapshot.windows == [QuotaWindow(id: "codex.primary", title: "5-hour", remainingPercent: 85, resetAt: Date(timeIntervalSince1970: 1_800_000_000))])
     }
 
+    @Test func codexChoosesMainBucketByStructureNotByName() async throws {
+        let snapshot = try await fetchCodex(#"{"rate_limit":{"limit_name":"Codex CLI","primary_window":{"used_percent":15,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":40,"limit_window_seconds":604800,"reset_at":1800060000}},"additional_rate_limits":[{"metered_feature":"codex_other","limit_name":"Codex","rate_limit":{"primary_window":{"used_percent":5,"limit_window_seconds":604800,"reset_at":1800000000}}}]}"#)
+        #expect(snapshot.windows.map(\.id) == ["codex.primary", "codex.secondary", "codex_other.primary"])
+        #expect(snapshot.windows.map(\.title) == ["5-hour", "Weekly", "Weekly Codex"])
+    }
+
     @Test(arguments: [
         #"[{"metered_feature":"codex_spark","limit_name":"A","rate_limit":{"primary_window":{"used_percent":5,"reset_at":1800000000}}},{"metered_feature":"codex_spark","limit_name":"B","rate_limit":{"primary_window":{"used_percent":5,"reset_at":1800000000}}}]"#,
         #"[{"metered_feature":"codex_spark","limit_name":"A","rate_limit":{"primary_window":{"used_percent":100.1,"reset_at":1800000000}}}]"#,
