@@ -4,7 +4,7 @@ import QuotaCore
 
 @MainActor
 protocol ZaiBrowserLoginDriving {
-    func login(_ id: ProviderID) async throws -> String
+    func login(_ id: ProviderID) async throws -> (key: String, account: AccountIdentity?)
 }
 
 @MainActor
@@ -63,7 +63,7 @@ final class ZaiBrowserLoginController: ZaiBrowserLoginDriving {
         self.makeState = makeState
     }
 
-    func login(_ id: ProviderID) async throws -> String {
+    func login(_ id: ProviderID) async throws -> (key: String, account: AccountIdentity?) {
         guard id == .zai else { throw QuotaError.notConfigured }
         try Task.checkCancellation()
         ZaiCallbackRouter.shared.reset()

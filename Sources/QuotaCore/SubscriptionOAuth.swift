@@ -6,18 +6,22 @@ public struct OAuthTokens: Codable, Equatable, Sendable {
     public let refreshToken: String
     public let expiresAt: Date
     public let accountID: String?
+    public let idToken: String?
 
-    public init(accessToken: String, refreshToken: String, expiresAt: Date, accountID: String? = nil) {
+    public init(accessToken: String, refreshToken: String, expiresAt: Date, accountID: String? = nil,
+                idToken: String? = nil) {
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.expiresAt = expiresAt
         self.accountID = accountID
+        self.idToken = idToken
     }
 
     public func validated() throws -> Self {
         guard expiresAt.timeIntervalSince1970.isFinite else { throw QuotaError.invalidResponse }
         try Self.validateSecret(accessToken)
         try Self.validateSecret(refreshToken)
+        if let idToken { try Self.validateSecret(idToken) }
         if let accountID {
             guard !accountID.isEmpty, accountID.count <= 1024,
                   accountID.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
@@ -223,7 +227,8 @@ private func decodeToken(
             accessToken: payload.accessToken,
             refreshToken: payload.refreshToken,
             expiresAt: now.addingTimeInterval(expiresIn),
-            accountID: accountID
+            accountID: accountID,
+            idToken: provider == .codex ? payload.idToken : nil
         ).validated()
     } catch {
         throw OAuthError.invalidResponse
@@ -257,7 +262,7 @@ private func jwtExpiration(_ jwt: String) -> Date? {
     return Date(timeIntervalSince1970: seconds)
 }
 
-private func decodeJWT(_ jwt: String) -> [String: Any]? {
+func decodeJWT(_ jwt: String) -> [String: Any]? {
     let pieces = jwt.split(separator: ".", omittingEmptySubsequences: false)
     guard pieces.count == 3, !pieces[0].isEmpty, !pieces[1].isEmpty, !pieces[2].isEmpty,
           pieces[1].count <= 64 * 1024

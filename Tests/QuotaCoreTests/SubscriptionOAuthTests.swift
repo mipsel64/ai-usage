@@ -79,6 +79,7 @@ struct SubscriptionOAuthTests {
         let transport = ScriptedOAuthTransport(responses: [.init(statusCode: 200, body: body)])
         let tokens = try await CodexOAuth.refresh(refreshToken: "old refresh", transport: transport, now: now)
         #expect(tokens.accountID == "account-123")
+        #expect(tokens.idToken == jwt)
         #expect(tokens.refreshToken == "new-refresh")
         let request = await transport.onlyRequest()
         #expect(request.url?.absoluteString == "https://auth.openai.com/oauth/token")

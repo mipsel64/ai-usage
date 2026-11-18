@@ -42,15 +42,19 @@ public struct QuotaProvider: Identifiable, Sendable {
     public let accountURL: URL
     public let connection: ProviderConnection
     public let reset: ResetAction
+    public let readAccount: (@Sendable (ProviderAccess) async -> AccountIdentity?)?
     public let read: @Sendable (ProviderAccess) async throws -> QuotaSnapshot
 
     public init(id: ProviderID, displayName: String, accountURL: URL, connection: ProviderConnection,
-                reset: ResetAction, read: @escaping @Sendable (ProviderAccess) async throws -> QuotaSnapshot) {
+                reset: ResetAction,
+                readAccount: (@Sendable (ProviderAccess) async -> AccountIdentity?)? = nil,
+                read: @escaping @Sendable (ProviderAccess) async throws -> QuotaSnapshot) {
         self.id = id
         self.displayName = displayName
         self.accountURL = accountURL
         self.connection = connection
         self.reset = reset
+        self.readAccount = readAccount
         self.read = read
     }
 
@@ -74,7 +78,10 @@ public enum ProviderCatalog {
 
     public static let all: [QuotaProvider] = [
         QuotaProvider(id: .claude, displayName: "Claude", accountURL: claudeUsage,
-                      connection: .oauth, reset: .website(claudeUsage)) {
+                      connection: .oauth, reset: .website(claudeUsage), readAccount: {
+                          guard case let .oauth(tokens) = $0 else { return nil }
+                          return try? await ClaudeAccountIdentity.fetch(tokens: tokens)
+                      }) {
             try await ClaudeRemoteUsage.fetch(tokens: $0.oauthTokens())
         },
         QuotaProvider(id: .codex, displayName: "Codex", accountURL: codexUsage,
@@ -85,13 +92,19 @@ public enum ProviderCatalog {
                               creditID: id,
                               idempotencyKey: key
                           )
+                      }, readAccount: {
+                          guard case let .oauth(tokens) = $0 else { return nil }
+                          return CodexAccountIdentity.decode(tokens: tokens)
                       }) { try await CodexRemoteUsage.fetch(tokens: $0.oauthTokens()) },
         QuotaProvider(id: .zai, displayName: "Z.ai", accountURL: zaiUsage,
                       connection: .browserLogin, reset: .website(zaiUsage)) {
             try await RemoteUsage.fetch(provider: .zai, credential: $0.key())
         },
         QuotaProvider(id: .kimi, displayName: "Kimi", accountURL: URL(string: "https://www.kimi.com/code/console")!,
-                      connection: .oauth, reset: .automaticOnly) {
+                      connection: .oauth, reset: .automaticOnly, readAccount: {
+                          guard case let .oauth(tokens) = $0 else { return nil }
+                          return try? await KimiAccountIdentity.fetch(tokens: tokens)
+                      }) {
             try await RemoteUsage.fetch(provider: .kimi, credential: $0.oauthTokens().accessToken)
         },
     ]
