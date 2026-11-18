@@ -42,6 +42,6 @@ struct LegacyKeychainCredentials: LegacyCredentialReading {
 
     func remove(_ id: ProviderID) throws {
         let status = SecItemDelete(query(id) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw VaultError.keychainMigration }
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw VaultError.keychainRemoval }
     }
 }
