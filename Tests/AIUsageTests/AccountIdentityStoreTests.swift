@@ -45,7 +45,7 @@ struct AccountIdentityStoreTests {
         #expect(store.states[id]?.needsAuthentication == false)
     }
 
-    @Test func browserIdentityIsRestoredReplacedAndRemoved() async throws {
+    @Test func browserIdentityStaysInMemoryForTheSessionOnly() async throws {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
         let provider = QuotaProvider(
@@ -57,22 +57,14 @@ struct AccountIdentityStoreTests {
         let store = UsageStore(providers: [provider], defaults: defaults, vault: vault, browserLogin: login)
         try await store.connect(id)
         #expect(store.states[id]?.account == identity)
-        #expect(defaults.data(forKey: "account.\(id.rawValue)") != nil)
+        #expect(!defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix("account.") })
 
-        let restored = UsageStore(providers: [provider], defaults: defaults, vault: vault, browserLogin: login)
-        #expect(restored.states[id]?.account == identity)
-        login.account = nil
-        try await restored.connect(id)
-        #expect(restored.states[id]?.account == nil)
-        #expect(defaults.data(forKey: "account.\(id.rawValue)") == nil)
+        let relaunched = UsageStore(providers: [provider], defaults: defaults, vault: vault, browserLogin: login)
+        #expect(relaunched.states[id]?.connected == true)
+        #expect(relaunched.states[id]?.account == nil)
 
-        login.account = identity
-        try await restored.connect(id)
-        try await restored.disconnect(id)
-        #expect(defaults.data(forKey: "account.\(id.rawValue)") == nil)
-        #expect(restored.states[id]?.account == nil)
-        let afterDisconnect = UsageStore(providers: [provider], defaults: defaults, vault: vault, browserLogin: login)
-        #expect(afterDisconnect.states[id]?.account == nil)
+        try await store.disconnect(id)
+        #expect(store.states[id]?.account == nil)
     }
 
     @Test func existingConnectionLoadsIdentityOnFirstSuccessfulRefreshOnly() async throws {

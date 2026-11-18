@@ -54,9 +54,6 @@ final class UsageStore {
             let id = provider.id
             let connected = defaults.bool(forKey: "connected.\(id.rawValue)")
             var state = ProviderState(connected: connected)
-            if connected, let data = defaults.data(forKey: "account.\(id.rawValue)") {
-                state.account = (try? JSONDecoder().decode(AccountIdentity.self, from: data))?.sanitized()
-            }
             if connected, let data = defaults.data(forKey: "snapshot.\(id.rawValue)") {
                 state.snapshot = try? JSONDecoder().decode(QuotaSnapshot.self, from: data)
                 state.message = "Waiting for the next reading."
@@ -136,14 +133,9 @@ final class UsageStore {
         accountTasks[id]?.cancel()
         accountTasks[id] = nil
         defaults.removeObject(forKey: "snapshot.\(id.rawValue)")
-        defaults.removeObject(forKey: "account.\(id.rawValue)")
         defaults.set(true, forKey: "connected.\(id.rawValue)")
         if case .oauth = provider.connection {
             defaults.set(1, forKey: "oauthVersion.\(id.rawValue)")
-        }
-        if case .browserLogin = provider.connection, let signInAccount,
-           let data = try? JSONEncoder().encode(signInAccount) {
-            defaults.set(data, forKey: "account.\(id.rawValue)")
         }
         states[id] = ProviderState(connected: true, snapshot: firstReading, account: signInAccount)
         if let firstReading {
@@ -166,7 +158,7 @@ final class UsageStore {
         loadedAccounts.remove(id)
         accountTasks[id]?.cancel()
         accountTasks[id] = nil
-        for prefix in ["connected", "path", "snapshot", "oauthVersion", "account"] { defaults.removeObject(forKey: "\(prefix).\(id.rawValue)") }
+        for prefix in ["connected", "path", "snapshot", "oauthVersion"] { defaults.removeObject(forKey: "\(prefix).\(id.rawValue)") }
         states[id] = ProviderState()
     }
 
