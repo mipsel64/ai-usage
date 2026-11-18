@@ -21,6 +21,8 @@ struct AccountIdentityTests {
 
     @Test func claudeHandlesMissingHostileAndMalformedFields() {
         #expect(ClaudeAccountIdentity.decode(Data(#"{"account":{},"organization":{}}"#.utf8)) == nil)
+        let fallback = ClaudeAccountIdentity.decode(Data(#"{"account":{"display_name":" \u0000 ","full_name":" Fallback Name "},"organization":{"plan_display_name":" \u0000 ","organization_type":" claude_pro "}}"#.utf8))
+        #expect(fallback == AccountIdentity(name: "Fallback Name", plan: "claude_pro"))
         let hostile = ClaudeAccountIdentity.decode(Data("{\"account\":{\"email\":\" \(longString())\\u0000\",\"display_name\":\" A\\u0007lice \"}}".utf8))
         #expect(hostile?.email?.count == 254)
         #expect(hostile?.name == "Alice")
@@ -32,6 +34,7 @@ struct AccountIdentityTests {
     @Test func codexDecodesIDTokenAndExistingAccessToken() {
         let payload: [String: Any] = [
             "email": " user@example.com ",
+            "name": " Alice ",
             "https://api.openai.com/auth": [
                 "chatgpt_plan_type": " pro ",
                 "organizations": [
@@ -42,7 +45,7 @@ struct AccountIdentityTests {
         ]
         let jwt = makeJWT(payload)
         #expect(CodexAccountIdentity.decode(jwt: jwt) == AccountIdentity(
-            email: "user@example.com", plan: "pro", organization: "Example Org"
+            email: "user@example.com", name: "Alice", plan: "pro", organization: "Example Org"
         ))
         var stored = tokens
         #expect(CodexAccountIdentity.decode(tokens: stored) == nil)
@@ -56,8 +59,32 @@ struct AccountIdentityTests {
         #expect(CodexAccountIdentity.decode(tokens: stored)?.plan == "pro")
     }
 
+    @Test func codexMergesIDAndAccessTokenIdentityByField() {
+        let idToken = makeJWT(["name": " ID Name "])
+        let accessToken = makeJWT([
+            "email": " access@example.com ",
+            "name": "Access Name",
+            "https://api.openai.com/auth": [
+                "chatgpt_plan_type": "plus",
+                "organizations": [["title": "Workspace", "is_default": true]],
+            ],
+        ])
+        let merged = CodexAccountIdentity.decode(tokens: OAuthTokens(
+            accessToken: accessToken, refreshToken: "refresh",
+            expiresAt: Date().addingTimeInterval(3600), idToken: idToken
+        ))
+        #expect(merged == AccountIdentity(
+            email: "access@example.com", name: "ID Name", plan: "plus", organization: "Workspace"
+        ))
+    }
+
     @Test func codexHandlesMissingHostileAndMalformedClaims() {
         #expect(CodexAccountIdentity.decode(jwt: makeJWT(["sub": "user"])) == nil)
+        let fallback = CodexAccountIdentity.decode(jwt: makeJWT([
+            "email": "\u{200B} \u{200B}",
+            "https://api.openai.com/profile": ["email": " profile@example.com "],
+        ]))
+        #expect(fallback?.email == "profile@example.com")
         let hostile = CodexAccountIdentity.decode(jwt: makeJWT([
             "email": longString(),
             "https://api.openai.com/auth": ["chatgpt_plan_type": " p\u{0000}ro "],
@@ -87,6 +114,7 @@ struct AccountIdentityTests {
         #expect(hasNoControls(hostile))
         #expect(KimiAccountIdentity.decode(Data("not json".utf8)) == nil)
         #expect(KimiAccountIdentity.decode(Data(#"{"email":"user@example.com"}"#.utf8)) == nil)
+        #expect(KimiAccountIdentity.decode(Data(#"{"user_id":"   ","email":"user@example.com"}"#.utf8)) == nil)
     }
 
     @Test func zaiDecodesSignInUserAndSelectedOrganization() {
@@ -113,6 +141,9 @@ struct AccountIdentityTests {
     @Test func emptySanitisedIdentityIsNilAndFormatCharactersAreRemoved() {
         #expect(AccountIdentity(email: " \n ", name: "\u{0000}").sanitized() == nil)
         #expect(AccountIdentity(name: "A\u{202E}B").sanitized()?.name == "AB")
+        #expect(AccountIdentity(name: "\u{200B} \u{200B}").sanitized() == nil)
+        let combining = "a" + String(repeating: "\u{0301}", count: 200)
+        #expect(AccountIdentity(name: combining).sanitized()?.name?.unicodeScalars.count == 128)
     }
 
     private func longString() -> String { String(repeating: "x", count: 300) }

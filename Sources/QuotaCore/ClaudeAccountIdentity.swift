@@ -29,8 +29,10 @@ enum ClaudeAccountIdentity {
         let organization = root["organization"] as? [String: Any]
         return AccountIdentity(
             email: account?["email"] as? String,
-            name: (account?["display_name"] as? String) ?? (account?["full_name"] as? String),
-            plan: (organization?["plan_display_name"] as? String) ?? (organization?["organization_type"] as? String),
+            name: AccountIdentity.sanitizedText(account?["display_name"] as? String)
+                ?? AccountIdentity.sanitizedText(account?["full_name"] as? String),
+            plan: AccountIdentity.sanitizedText(organization?["plan_display_name"] as? String)
+                ?? AccountIdentity.sanitizedText(organization?["organization_type"] as? String),
             organization: organization?["name"] as? String
         ).sanitized()
     }

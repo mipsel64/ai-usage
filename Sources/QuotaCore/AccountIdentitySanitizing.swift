@@ -4,21 +4,29 @@ extension AccountIdentity {
     /// Provider responses and preferences are display-only, untrusted input.
     public func sanitized() -> Self? {
         let value = Self(
-            email: Self.field(email, limit: 254),
-            name: Self.field(name, limit: 128),
-            plan: Self.field(plan, limit: 128),
-            organization: Self.field(organization, limit: 128)
+            email: Self.sanitizedEmail(email),
+            name: Self.sanitizedText(name),
+            plan: Self.sanitizedText(plan),
+            organization: Self.sanitizedText(organization)
         )
         return value.isEmpty ? nil : value
     }
 
+    static func sanitizedEmail(_ value: String?) -> String? {
+        field(value, limit: 254)
+    }
+
+    static func sanitizedText(_ value: String?) -> String? {
+        field(value, limit: 128)
+    }
+
     private static func field(_ value: String?, limit: Int) -> String? {
         guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleaned = String(String.UnicodeScalarView(trimmed.unicodeScalars.filter {
+        let cleaned = String(String.UnicodeScalarView(value.unicodeScalars.filter {
             $0.properties.generalCategory != .format && !CharacterSet.controlCharacters.contains($0)
         }))
-        guard !cleaned.isEmpty else { return nil }
-        return String(cleaned.prefix(limit))
+        let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return String(String.UnicodeScalarView(trimmed.unicodeScalars.prefix(limit)))
     }
 }
