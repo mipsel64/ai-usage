@@ -1,29 +1,24 @@
-import AppKit
 import SwiftUI
 
-struct MenuPopoverBackdrop: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        configure(view)
-        return view
-    }
+private let popoverCornerRadius: CGFloat = 24
 
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        configure(view)
-    }
+struct MenuPopoverBackdrop: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    private func configure(_ view: NSVisualEffectView) {
-        view.material = .popover
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.wantsLayer = true
-        view.layer?.cornerRadius = 18
-        view.layer?.masksToBounds = true
-        DispatchQueue.main.async { [weak view] in
-            guard let window = view?.window else { return }
-            window.isOpaque = false
-            window.backgroundColor = .clear
-            window.hasShadow = true
+    @ViewBuilder
+    var body: some View {
+        if #available(macOS 26.0, *), !reduceTransparency {
+            Color.clear
+                .glassEffect(.regular, in: .rect(cornerRadius: popoverCornerRadius))
+                .background(MenuPopoverWindow(needsMaterial: false))
+        } else {
+            MenuPopoverWindow(needsMaterial: !reduceTransparency)
+                .background {
+                    if reduceTransparency {
+                        Color(nsColor: .windowBackgroundColor)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: popoverCornerRadius, style: .continuous))
         }
     }
 }

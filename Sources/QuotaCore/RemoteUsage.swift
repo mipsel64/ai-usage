@@ -3,6 +3,9 @@ import Foundation
 /// Fetches account quota directly from the supported first-party provider APIs.
 public enum RemoteUsage {
     private static let zaiURL = URL(string: "https://api.z.ai/api/monitor/usage/quota/limit")!
+    private static let zaiResetURL = URL(
+        string: "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL"
+    )!
     private static let kimiURL = URL(string: "https://api.kimi.com/coding/v1/usages")!
     static let maximumResponseBytes = 64 * 1024
 
@@ -51,15 +54,28 @@ public enum RemoteUsage {
             throw QuotaError.notConfigured
         }
 
+        async let resetInventory: ZaiResetData? = provider == .zai
+            ? fetchZaiResetInventory(credential: credential, transport: transport)
+            : nil
+
         let body = try await fetch(endpoint: url, credential: credential, transport: transport)
         let receivedAt = observedAt ?? Date()
+        let snapshot: QuotaSnapshot
         do {
-            return try decoder(body, receivedAt)
+            snapshot = try decoder(body, receivedAt)
         } catch let error as QuotaError {
             throw error
         } catch {
             throw QuotaError.invalidResponse
         }
+        let inventory = try await resetInventory
+        let resetCredits = inventory.map { zaiResetCredits($0, observedAt: receivedAt) }
+        try Task.checkCancellation()
+        return QuotaSnapshot(
+            windows: snapshot.windows,
+            observedAt: snapshot.observedAt,
+            resetCredits: resetCredits
+        )
     }
 
     /// Reads a compiled, first-party HTTPS endpoint using the shared quota security boundary.
@@ -157,9 +173,58 @@ public enum RemoteUsage {
         }
     }
 
+    private static func fetchZaiResetInventory(
+        credential: String,
+        transport: RemoteUsageTransport
+    ) async throws -> ZaiResetData? {
+        // Read-only inventory used by the subscription dashboard. Never redeem a card here.
+        // https://github.com/LogicIncZo/zai-usage/blob/main/zai-usage.ts
+        // https://github.com/yetone/magpie/blob/main/internal/provider/zhipu_resets_test.go
+        do {
+            let body = try await fetch(
+                endpoint: zaiResetURL,
+                credential: credential,
+                transport: transport
+            )
+            let envelope = try JSONDecoder().decode(ZaiResetEnvelope.self, from: body)
+            guard envelope.code == 200, envelope.success else { return nil }
+            return envelope.data
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
+    }
+
+    private static func zaiResetCredits(_ inventory: ZaiResetData, observedAt: Date) -> ResetCredits {
+        var availableCount = 0
+        var nextExpiry: Date?
+        for reset in [inventory.fiveHourResets, inventory.weekResets].lazy.joined() where reset.available {
+            guard let expiry = reset.expiry else {
+                availableCount += 1
+                continue
+            }
+            guard expiry > observedAt else { continue }
+            availableCount += 1
+            if let current = nextExpiry {
+                nextExpiry = min(current, expiry)
+            } else {
+                nextExpiry = expiry
+            }
+        }
+        return ResetCredits(
+            availableCount: availableCount,
+            nextID: nil,
+            nextTitle: nil,
+            nextExpiry: nextExpiry
+        )
+    }
+
     private static func decodeZai(_ body: Data, observedAt: Date) throws -> QuotaSnapshot {
         // The monitor endpoint is used by the Coding Plan dashboard and open-source CLI integrations.
-        // https://github.com/shaftoe/pi-zai-usage/blob/master/src/api.ts
+        // Weekly is unit 6 with number 1; legacy readers also accept number 7 or an omitted number.
+        // https://openusage.sh/docs/providers/zai/
+        // https://netspeedy.github.io/zquota/windows/
         // The plan's 5-hour and weekly reset semantics are documented at
         // https://docs.z.ai/devpack/overview and https://docs.z.ai/devpack/faq.
         let envelope = try JSONDecoder().decode(ZaiEnvelope.self, from: body)
@@ -249,7 +314,7 @@ public enum RemoteUsage {
         return QuotaSnapshot(windows: windows, observedAt: observedAt)
     }
 
-    private static func parseRFC3339(_ value: String) -> Date? {
+    fileprivate static func parseRFC3339(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = formatter.date(from: value) { return date }
@@ -351,6 +416,39 @@ private struct ZaiData: Decodable {
     let limits: [ZaiLimit]
 }
 
+private struct ZaiResetEnvelope: Decodable {
+    let code: Int
+    let success: Bool
+    let data: ZaiResetData?
+}
+
+private struct ZaiResetData: Decodable {
+    let fiveHourResets: [ZaiResetCard]
+    let weekResets: [ZaiResetCard]
+}
+
+private struct ZaiResetCard: Decodable {
+    let available: Bool
+    let expiry: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case available, expireTime
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        available = try container.decode(Bool.self, forKey: .available)
+        let expireTime = try container.decodeIfPresent(String.self, forKey: .expireTime)
+        guard available, let expireTime else {
+            expiry = nil
+            return
+        }
+        let timestamp = expireTime.replacingOccurrences(of: " ", with: "T") + "+08:00"
+        guard let date = RemoteUsage.parseRFC3339(timestamp) else { throw QuotaError.invalidResponse }
+        expiry = date
+    }
+}
+
 private struct ZaiLimit: Decodable {
     let type: String
     let unit: Int?
@@ -387,7 +485,8 @@ private struct ZaiLimit: Decodable {
         case ("TOKENS_LIMIT", .some(3), .some(5)), ("CREDIT_LIMIT", .some(3), .some(5)),
              ("TOKENS_LIMIT", .some(3), nil), ("CREDIT_LIMIT", .some(3), nil):
             return .fiveHour
-        case ("TOKENS_LIMIT", .some(6), .some(7)), ("CREDIT_LIMIT", .some(6), .some(7)),
+        case ("TOKENS_LIMIT", .some(6), .some(1)), ("CREDIT_LIMIT", .some(6), .some(1)),
+             ("TOKENS_LIMIT", .some(6), .some(7)), ("CREDIT_LIMIT", .some(6), .some(7)),
              ("TOKENS_LIMIT", .some(6), nil), ("CREDIT_LIMIT", .some(6), nil):
             return .weekly
         case ("TIME_LIMIT", .some(5), .some(1)):

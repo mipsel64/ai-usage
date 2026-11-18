@@ -79,6 +79,7 @@ struct SubscriptionOAuthTests {
         let transport = ScriptedOAuthTransport(responses: [.init(statusCode: 200, body: body)])
         let tokens = try await CodexOAuth.refresh(refreshToken: "old refresh", transport: transport, now: now)
         #expect(tokens.accountID == "account-123")
+        #expect(tokens.idToken == jwt)
         #expect(tokens.refreshToken == "new-refresh")
         let request = await transport.onlyRequest()
         #expect(request.url?.absoluteString == "https://auth.openai.com/oauth/token")
@@ -96,6 +97,44 @@ struct SubscriptionOAuthTests {
         await #expect(throws: OAuthError.invalidResponse) {
             _ = try await CodexOAuth.refresh(refreshToken: "refresh", transport: transport, now: now)
         }
+    }
+
+    @Test func codexDropsOversizedIDTokenWithoutFailingLogin() async throws {
+        let access = makeJWT(["https://api.openai.com/auth": ["chatgpt_account_id": "account-123"]])
+        let body = try JSONSerialization.data(withJSONObject: [
+            "id_token": String(repeating: "x", count: 16 * 1024 + 1),
+            "access_token": access,
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+        ])
+        let transport = ScriptedOAuthTransport(responses: [.init(statusCode: 200, body: body)])
+        let tokens = try await CodexOAuth.refresh(refreshToken: "old-refresh", transport: transport, now: now)
+        #expect(tokens.accessToken == access)
+        #expect(tokens.accountID == "account-123")
+        #expect(tokens.idToken == nil)
+    }
+
+    @Test func codexRefreshKeepsPreviousIDTokenWhenAccountIsUnchanged() async throws {
+        let idToken = makeJWT([
+            "email": "user@example.com",
+            "https://api.openai.com/auth": ["chatgpt_account_id": "account-123", "chatgpt_plan_type": "pro"],
+        ])
+        let access = makeJWT(["https://api.openai.com/auth": ["chatgpt_account_id": "account-123"]])
+        let previous = OAuthTokens(
+            accessToken: "old-access", refreshToken: "old-refresh", expiresAt: now.addingTimeInterval(3600),
+            accountID: "account-123", idToken: idToken
+        )
+        let body = try JSONSerialization.data(withJSONObject: [
+            "access_token": access, "refresh_token": "new-refresh", "expires_in": 7200,
+        ])
+        let transport = ScriptedOAuthTransport(responses: [.init(statusCode: 200, body: body)])
+        let refreshed = try await SubscriptionOAuthTokens.refresh(
+            previous, provider: .codex, transport: transport, now: now
+        )
+        #expect(refreshed.idToken == idToken)
+        #expect(refreshed.accountID == previous.accountID)
+        #expect(refreshed.refreshToken == "new-refresh")
+        #expect(CodexAccountIdentity.decode(tokens: refreshed)?.email == "user@example.com")
     }
 
     @Test func kimiDeviceAuthorizationValidatesBrowserURLsAndDefaults() async throws {

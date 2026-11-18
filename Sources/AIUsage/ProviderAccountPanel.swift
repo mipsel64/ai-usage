@@ -7,24 +7,20 @@ private typealias ViewState<Value> = SwiftUI.State<Value>
 
 @MainActor
 struct ProviderAccountPanel: View {
+    let store: UsageStore
     let provider: QuotaProvider
     let state: ProviderState?
+
+    @Binding var secret: String
+    @Binding var executable: URL?
+    @Binding var error: String?
+    @Binding var isBusy: Bool
 
     @ViewState private var openFailureMessage: String?
     @ViewState private var copiedAddress = false
 
     private var accountHost: String {
         provider.accountURL.host() ?? provider.accountURL.absoluteString
-    }
-
-    private var badge: ConnectionBadge {
-        if state?.needsAuthentication == true {
-            return ConnectionBadge(title: "Sign-in required", status: .attention)
-        }
-        guard state?.connected == true else {
-            return ConnectionBadge(title: "Not connected", status: .disconnected)
-        }
-        return ConnectionBadge(title: "Connected", status: .connected)
     }
 
     private var authenticationName: String {
@@ -36,52 +32,166 @@ struct ProviderAccountPanel: View {
         }
     }
 
+    private var storesCredential: Bool {
+        switch provider.connection {
+        case .apiKey, .browserLogin, .oauth: true
+        case .signedExecutable: false
+        }
+    }
+
+    private var isWorking: Bool {
+        isBusy || state?.loading == true
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .center, spacing: 14) {
-                ProviderAvatar(provider: provider, size: 52)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(provider.displayName)
-                        .font(.title2.bold())
-                        .accessibilityAddTraits(.isHeader)
-                    badge
-                }
-                Spacer()
-                Button(action: openAccountPage) {
-                    Label("Usage portal", systemImage: "arrow.up.right")
-                }
-                .usageActionStyle()
-                .accessibilityHint("Opens \(accountHost) in your default browser.")
+        Form {
+            Section {
+                ProviderAccountHeader(
+                    provider: provider,
+                    accountHost: accountHost,
+                    openAccountPage: openAccountPage
+                )
             }
 
-            Text("Connect a \(provider.displayName) subscription to monitor quota windows and reset times.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(spacing: 8) {
-                AccountField(title: "Access", value: "Subscription")
-                AccountField(title: "Authentication", value: authenticationName)
-                AccountField(title: "Account website", value: accountHost)
+            if state?.connected == true {
+                AccountIdentitySection(account: state?.account)
             }
+
+            ProviderConnectionSection(
+                provider: provider,
+                state: state,
+                authenticationName: authenticationName,
+                storesCredential: storesCredential,
+                message: error ?? state?.message,
+                messageIsError: error != nil || state?.needsAuthentication == true,
+                secret: $secret,
+                executable: $executable,
+                chooseExecutable: chooseExecutable,
+                actions: ProviderConnectionActions(
+                    disconnectTitle: state?.connected == true ? disconnectButtonTitle : nil,
+                    connectTitle: connectButtonTitle,
+                    isBusy: isWorking,
+                    canConnect: canConnect,
+                    connectIsProminent: state?.connected != true || state?.needsAuthentication == true,
+                    connect: startConnecting,
+                    disconnect: startDisconnecting
+                )
+            )
 
             if let openFailureMessage {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label(openFailureMessage, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                        .font(.callout)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    HStack(spacing: 8) {
-                        Button("Try Again", action: openAccountPage)
-                        Button(copiedAddress ? "Copied" : "Copy Address", action: copyAddress)
-                    }
-                    .controlSize(.small)
-                    .usageGlassGroup()
-                }
+                AccountPortalFailure(
+                    message: openFailureMessage,
+                    copiedAddress: copiedAddress,
+                    tryAgain: openAccountPage,
+                    copyAddress: copyAddress
+                )
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var disconnectButtonTitle: String {
+        switch provider.connection {
+        case .oauth, .browserLogin: "Disconnect"
+        default: "Remove Connection"
+        }
+    }
+
+    private var connectButtonTitle: String {
+        let connected = state?.connected == true
+        if case .apiKey = provider.connection {
+            return connected ? "Verify & Replace Key" : "Verify & Connect"
+        }
+        switch provider.connection {
+        case .oauth, .browserLogin:
+            return connected ? "Reconnect…" : "Connect with \(provider.displayName)"
+        default:
+            return connected ? "Reconnect" : "Connect"
+        }
+    }
+
+    private var canConnect: Bool {
+        switch provider.connection {
+        case .signedExecutable:
+            executable != nil
+        case .apiKey:
+            !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .oauth, .browserLogin:
+            true
+        }
+    }
+
+    private func chooseExecutable() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose the Official \(provider.displayName) Executable"
+        panel.message = "Choose the signed native executable, not an npm wrapper."
+        panel.prompt = "Choose Executable"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return }
+        executable = panel.url
+        error = nil
+    }
+
+    private func startConnecting() {
+        Task { await connect() }
+    }
+
+    private func connect() async {
+        guard !isBusy, canConnect else { return }
+        let enteredSecret: String?
+        let selectedExecutable: URL?
+        switch provider.connection {
+        case .signedExecutable:
+            enteredSecret = nil
+            selectedExecutable = executable
+        case .apiKey:
+            enteredSecret = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+            selectedExecutable = nil
+        case .oauth, .browserLogin:
+            enteredSecret = nil
+            selectedExecutable = nil
+        }
+
+        isBusy = true
+        error = nil
+        defer {
+            isBusy = false
+            if case .apiKey = provider.connection {
+                secret = ""
+            }
+        }
+
+        do {
+            try await store.connect(provider.id, secret: enteredSecret, executable: selectedExecutable)
+        } catch {
+            self.error = connectionMessage(for: error)
+        }
+    }
+
+    private func startDisconnecting() {
+        Task { await disconnect() }
+    }
+
+    private func disconnect() async {
+        guard !isBusy else { return }
+        isBusy = true
+        error = nil
+        defer { isBusy = false }
+
+        do {
+            try await store.disconnect(provider.id)
+            secret = ""
+            if case .signedExecutable = provider.connection {
+                executable = nil
+            }
+        } catch {
+            self.error = connectionMessage(for: error)
+        }
     }
 
     private func openAccountPage() {

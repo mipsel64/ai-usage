@@ -38,8 +38,7 @@ struct AIUsageApp: App {
                 .accessibilityLabel("AI Usage")
         }.menuBarExtraStyle(.window)
         Settings {
-            ConnectionView(store: delegate.store)
-                .navigationTitle("AI Usage Accounts")
+            AccountsView(store: delegate.store)
         }
     }
 }

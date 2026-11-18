@@ -66,7 +66,7 @@ public enum ZaiOAuth {
         code: String,
         state: String,
         transport: any RemoteUsageTransport = RemoteUsage.defaultTransport()
-    ) async throws -> String {
+    ) async throws -> (key: String, account: AccountIdentity?) {
         try validateState(state)
         try validateSecret(code, maximumBytes: 4096)
         try Task.checkCancellation()
@@ -81,13 +81,18 @@ public enum ZaiOAuth {
               let zai = object["zai"] as? [String: Any],
               let accessToken = try secret(zai["access_token"], maximumBytes: 16 * 1024)
         else { throw OAuthError.invalidResponse }
-        return try await mintKey(oauthAccessToken: accessToken, transport: transport)
+        return try await mintKey(
+            oauthAccessToken: accessToken,
+            user: object["user"] as? [String: Any],
+            transport: transport
+        )
     }
 
     private static func mintKey(
         oauthAccessToken: String,
+        user: [String: Any]?,
         transport: any RemoteUsageTransport
-    ) async throws -> String {
+    ) async throws -> (key: String, account: AccountIdentity?) {
         let login = try unwrap(try await post(
             businessLoginURL,
             fields: ["token": oauthAccessToken],
@@ -138,7 +143,7 @@ public enum ZaiOAuth {
         guard minted.split(separator: ".", omittingEmptySubsequences: false).count == 2 else {
             throw OAuthError.invalidResponse
         }
-        return minted
+        return (minted, ZaiAccountIdentity.decode(user: user, organization: organization))
     }
 
     private static func get(

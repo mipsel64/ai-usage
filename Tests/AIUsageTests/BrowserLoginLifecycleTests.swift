@@ -63,9 +63,9 @@ private final class StubBrowserLogin: ZaiBrowserLoginDriving {
     let key: String
     private(set) var loginCalls = 0
     init(key: String) { self.key = key }
-    func login(_ id: ProviderID) async throws -> String {
+    func login(_ id: ProviderID) async throws -> (key: String, account: AccountIdentity?) {
         loginCalls += 1
-        return key
+        return (key, nil)
     }
 }
 

@@ -38,6 +38,23 @@ public struct ResetCredits: Equatable, Codable, Sendable {
     }
 }
 
+/// Who owns the connected subscription, as reported by the provider. Every field is optional.
+public struct AccountIdentity: Equatable, Codable, Sendable {
+    public let email: String?
+    public let name: String?
+    public let plan: String?
+    public let organization: String?
+
+    public init(email: String? = nil, name: String? = nil, plan: String? = nil, organization: String? = nil) {
+        self.email = email
+        self.name = name
+        self.plan = plan
+        self.organization = organization
+    }
+
+    public var isEmpty: Bool { email == nil && name == nil && plan == nil && organization == nil }
+}
+
 public struct QuotaSnapshot: Equatable, Codable, Sendable {
     public let windows: [QuotaWindow]
     public let observedAt: Date

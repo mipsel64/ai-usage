@@ -6,18 +6,22 @@ public struct OAuthTokens: Codable, Equatable, Sendable {
     public let refreshToken: String
     public let expiresAt: Date
     public let accountID: String?
+    public let idToken: String?
 
-    public init(accessToken: String, refreshToken: String, expiresAt: Date, accountID: String? = nil) {
+    public init(accessToken: String, refreshToken: String, expiresAt: Date, accountID: String? = nil,
+                idToken: String? = nil) {
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.expiresAt = expiresAt
         self.accountID = accountID
+        self.idToken = idToken
     }
 
     public func validated() throws -> Self {
         guard expiresAt.timeIntervalSince1970.isFinite else { throw QuotaError.invalidResponse }
         try Self.validateSecret(accessToken)
         try Self.validateSecret(refreshToken)
+        if let idToken { try Self.validateSecret(idToken) }
         if let accountID {
             guard !accountID.isEmpty, accountID.count <= 1024,
                   accountID.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
@@ -218,12 +222,20 @@ private func decodeToken(
         accountID = nil
     }
 
+    let displayIDToken = payload.idToken.flatMap { value -> String? in
+        guard provider == .codex, !value.isEmpty, value.utf8.count <= 16 * 1024,
+              value.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
+        else { return nil }
+        return value
+    }
+
     do {
         return try OAuthTokens(
             accessToken: payload.accessToken,
             refreshToken: payload.refreshToken,
             expiresAt: now.addingTimeInterval(expiresIn),
-            accountID: accountID
+            accountID: accountID,
+            idToken: displayIDToken
         ).validated()
     } catch {
         throw OAuthError.invalidResponse
@@ -257,7 +269,7 @@ private func jwtExpiration(_ jwt: String) -> Date? {
     return Date(timeIntervalSince1970: seconds)
 }
 
-private func decodeJWT(_ jwt: String) -> [String: Any]? {
+func decodeJWT(_ jwt: String) -> [String: Any]? {
     let pieces = jwt.split(separator: ".", omittingEmptySubsequences: false)
     guard pieces.count == 3, !pieces[0].isEmpty, !pieces[1].isEmpty, !pieces[2].isEmpty,
           pieces[1].count <= 64 * 1024
@@ -587,7 +599,18 @@ public enum SubscriptionOAuthTokens {
         case .claude:
             return try await ClaudeOAuth.refresh(refreshToken: tokens.refreshToken, transport: transport, now: now)
         case .codex:
-            return try await CodexOAuth.refresh(refreshToken: tokens.refreshToken, transport: transport, now: now)
+            let refreshed = try await CodexOAuth.refresh(
+                refreshToken: tokens.refreshToken, transport: transport, now: now
+            )
+            guard refreshed.idToken == nil, let previousIDToken = tokens.idToken,
+                  refreshed.accountID == tokens.accountID else { return refreshed }
+            return try OAuthTokens(
+                accessToken: refreshed.accessToken,
+                refreshToken: refreshed.refreshToken,
+                expiresAt: refreshed.expiresAt,
+                accountID: refreshed.accountID,
+                idToken: previousIDToken
+            ).validated()
         case .kimi:
             return try await KimiOAuth.refresh(refreshToken: tokens.refreshToken, transport: transport, now: now)
         default:

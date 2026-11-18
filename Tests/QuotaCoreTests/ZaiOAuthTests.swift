@@ -38,8 +38,9 @@ struct ZaiOAuthTests {
 
     @Test func exchangeCreatesAndCopiesOnlyTheDurableMintedKey() async throws {
         let transport = ZaiScriptedTransport(responses: createResponses())
-        let key = try await ZaiOAuth.exchange(code: "auth-code", state: state, transport: transport)
-        #expect(key == "created-key.real-secret")
+        let result = try await ZaiOAuth.exchange(code: "auth-code", state: state, transport: transport)
+        #expect(result.key == "created-key.real-secret")
+        #expect(result.account == AccountIdentity(email: "user@example.com", name: "Alice", organization: "Example Org"))
         let requests = await transport.requests
         #expect(requests.map(\.url?.absoluteString) == [
             "https://zcode.z.ai/api/v1/oauth/token",
@@ -68,8 +69,8 @@ struct ZaiOAuthTests {
         responses.remove(at: 4)
         responses[4] = .json(#"{"code":200,"success":true,"data":{"secretKey":"copied-secret"}}"#)
         let transport = ZaiScriptedTransport(responses: responses)
-        let key = try await ZaiOAuth.exchange(code: "auth-code", state: state, transport: transport)
-        #expect(key == "existing-key.copied-secret")
+        let result = try await ZaiOAuth.exchange(code: "auth-code", state: state, transport: transport)
+        #expect(result.key == "existing-key.copied-secret")
         let requests = await transport.requests
         #expect(requests.count == 5)
         #expect(requests.last?.url?.absoluteString == "\(keysURL)/copy/existing-key")
@@ -109,9 +110,9 @@ struct ZaiOAuthTests {
 
     private func createResponses() -> [RemoteUsageTransportResponse] {
         [
-            .json(#"{"code":0,"msg":"ok","data":{"token":"discarded-zcode-jwt","zai":{"access_token":"oauth-access-token"},"user":{"id":"user-42"}}}"#),
+            .json(#"{"code":0,"msg":"ok","data":{"token":"discarded-zcode-jwt","zai":{"access_token":"oauth-access-token"},"user":{"user_id":"user-42","email":"user@example.com","name":"Alice"}}}"#),
             .json(#"{"code":200,"success":true,"data":{"access_token":"biz-token","expires_in":3600}}"#),
-            .json(#"{"code":200,"success":true,"data":{"organizations":[{"organizationId":"org-other","projects":[{"projectId":"proj-x"}]},{"organizationId":"org-1","isDefault":true,"projects":[{"projectId":"proj-a"},{"projectId":"proj-1","isDefault":true}]}]}}"#),
+            .json(#"{"code":200,"success":true,"data":{"organizations":[{"organizationId":"org-other","projects":[{"projectId":"proj-x"}]},{"organizationId":"org-1","organizationName":"Example Org","isDefault":true,"projects":[{"projectId":"proj-a"},{"projectId":"proj-1","isDefault":true}]}]}}"#),
             .json(#"{"code":200,"success":true,"data":[]}"#),
             .json(#"{"code":200,"success":true,"data":{"name":"AI Usage","apiKey":"created-key","secretKey":"inline-ignored"}}"#),
             .json(#"{"code":200,"success":true,"data":{"secretKey":"real-secret"}}"#),
