@@ -365,7 +365,7 @@ public enum ClaudeOAuth {
         code: String,
         state: String,
         pkce: OAuthPKCE,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         let request = try OAuthRequest.json(url: tokenURL, fields: [
@@ -383,7 +383,7 @@ public enum ClaudeOAuth {
 
     public static func refresh(
         refreshToken: String,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         let request = try OAuthRequest.json(url: tokenURL, fields: [
@@ -428,7 +428,7 @@ public enum CodexOAuth {
     public static func exchange(
         code: String,
         pkce: OAuthPKCE,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         let request = OAuthRequest.form(url: tokenURL, fields: [
@@ -446,7 +446,7 @@ public enum CodexOAuth {
     public static func refresh(
         refreshToken: String,
         previousAccountID: String? = nil,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         let request = OAuthRequest.form(url: tokenURL, fields: [
@@ -471,7 +471,7 @@ public enum KimiOAuth {
 
     // First-party implementation: https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/auth/oauth.py
     public static func startDeviceAuthorization(
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport()
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport()
     ) async throws -> KimiDeviceAuthorization {
         let request = OAuthRequest.form(url: deviceURL, fields: ["client_id": clientID])
         let response = try await RemoteUsage.response(for: request, transport: transport)
@@ -481,7 +481,7 @@ public enum KimiOAuth {
 
     public static func poll(
         device: KimiDeviceAuthorization,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport()
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport()
     ) async throws -> OAuthTokens {
         try await poll(device: device, transport: transport, now: Date.init) { seconds in
             try await Task.sleep(for: .milliseconds(max(1, Int(seconds * 1000))))
@@ -551,7 +551,7 @@ public enum KimiOAuth {
 
     public static func refresh(
         refreshToken: String,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         let request = OAuthRequest.form(url: tokenURL, fields: [
@@ -627,7 +627,7 @@ public enum SubscriptionOAuthTokens {
     public static func refresh(
         _ tokens: OAuthTokens,
         provider: ProviderID,
-        transport: any RemoteUsageTransport = RemoteUsage.defaultTransport(),
+        transport: any RemoteUsageTransport = SubscriptionOAuthTokens.defaultTransport(),
         now: Date = Date()
     ) async throws -> OAuthTokens {
         _ = try tokens.validated()
