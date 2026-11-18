@@ -84,8 +84,6 @@ final class UsageStore {
 
     func connect(_ id: ProviderID, secret: String? = nil, executable: URL? = nil) async throws {
         guard let provider = providers.first(where: { $0.id == id }), !redeeming.contains(id) else { throw QuotaError.unavailable }
-        accountTasks[id]?.cancel()
-        accountTasks[id] = nil
         let generation = generations[id]
         let firstReading: QuotaSnapshot?
         var connectionAccess: ProviderAccess?
@@ -135,6 +133,8 @@ final class UsageStore {
         let connectedGeneration = UUID()
         generations[id] = connectedGeneration
         loadedAccounts.remove(id)
+        accountTasks[id]?.cancel()
+        accountTasks[id] = nil
         defaults.removeObject(forKey: "snapshot.\(id.rawValue)")
         defaults.removeObject(forKey: "account.\(id.rawValue)")
         defaults.set(true, forKey: "connected.\(id.rawValue)")
@@ -158,11 +158,11 @@ final class UsageStore {
 
     func disconnect(_ id: ProviderID) async throws {
         guard let provider = providers.first(where: { $0.id == id }), !redeeming.contains(id) else { throw QuotaError.unavailable }
-        generations[id] = UUID()
         switch provider.connection {
         case .apiKey, .browserLogin, .oauth: try vault.remove(id)
         default: break
         }
+        generations[id] = UUID()
         loadedAccounts.remove(id)
         accountTasks[id]?.cancel()
         accountTasks[id] = nil

@@ -60,22 +60,55 @@ struct AccountIdentityTests {
     }
 
     @Test func codexMergesIDAndAccessTokenIdentityByField() {
-        let idToken = makeJWT(["name": " ID Name "])
+        let idToken = makeJWT([
+            "name": " ID Name ",
+            "https://api.openai.com/auth": [
+                "chatgpt_plan_type": "pro",
+                "organizations": [["title": "Workspace", "is_default": true]],
+            ],
+        ])
         let accessToken = makeJWT([
             "email": " access@example.com ",
             "name": "Access Name",
             "https://api.openai.com/auth": [
                 "chatgpt_plan_type": "plus",
-                "organizations": [["title": "Workspace", "is_default": true]],
             ],
         ])
         let merged = CodexAccountIdentity.decode(tokens: OAuthTokens(
             accessToken: accessToken, refreshToken: "refresh",
-            expiresAt: Date().addingTimeInterval(3600), idToken: idToken
+            expiresAt: Date().addingTimeInterval(3600), accountID: "selected", idToken: idToken
         ))
         #expect(merged == AccountIdentity(
-            email: "access@example.com", name: "ID Name", plan: "plus", organization: "Workspace"
+            email: "access@example.com", name: "Access Name", plan: "plus", organization: "Workspace"
         ))
+    }
+
+    @Test(arguments: [false, true])
+    func codexIgnoresTokenFromDifferentAccount(mismatchedAccessToken: Bool) {
+        let different = makeJWT([
+            "email": "different@example.com",
+            "https://api.openai.com/auth": ["chatgpt_account_id": "different", "chatgpt_plan_type": "pro"],
+        ])
+        let selected = makeJWT([
+            "https://api.openai.com/auth": ["chatgpt_account_id": "selected", "chatgpt_plan_type": "plus"],
+        ])
+        let identity = CodexAccountIdentity.decode(tokens: OAuthTokens(
+            accessToken: mismatchedAccessToken ? different : selected, refreshToken: "refresh",
+            expiresAt: Date().addingTimeInterval(3600), accountID: "selected",
+            idToken: mismatchedAccessToken ? selected : different
+        ))
+        #expect(identity == AccountIdentity(plan: "plus"))
+    }
+
+    @Test func codexIgnoresTokenWithMalformedAccountID() {
+        let accessToken = makeJWT([
+            "https://api.openai.com/auth": ["chatgpt_account_id": 42, "chatgpt_plan_type": "pro"],
+        ])
+        let identity = CodexAccountIdentity.decode(tokens: OAuthTokens(
+            accessToken: accessToken, refreshToken: "refresh",
+            expiresAt: Date().addingTimeInterval(3600), accountID: "selected"
+        ))
+        #expect(identity == nil)
     }
 
     @Test func codexHandlesMissingHostileAndMalformedClaims() {
