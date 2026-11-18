@@ -199,6 +199,101 @@ struct AccountIdentityStoreTests {
         #expect(store.states[id]?.account == nil)
     }
 
+    @Test(arguments: [false, true])
+    func unsuccessfulReconnectKeepsPendingIdentity(cancelled: Bool) async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let gate = AsyncStream.makeStream(of: Void.self)
+        let provider = QuotaProvider(
+            id: id, displayName: "Identity", accountURL: url, connection: .apiKey,
+            reset: .automaticOnly,
+            readAccount: { _ in
+                for await _ in gate.stream { break }
+                return identity
+            }
+        ) { access in
+            if case .apiKey("replacement") = access {
+                if cancelled { throw CancellationError() }
+                throw QuotaError.unavailable
+            }
+            return snapshot
+        }
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: AccountMemoryVault())
+        try await store.connect(id, secret: "original")
+        let task = try #require(store.accountReadTask(for: id))
+        if cancelled {
+            await #expect(throws: CancellationError.self) { try await store.connect(id, secret: "replacement") }
+        } else {
+            await #expect(throws: QuotaError.self) { try await store.connect(id, secret: "replacement") }
+        }
+        gate.continuation.finish()
+        await task.value
+        #expect(!task.isCancelled)
+        #expect(store.states[id]?.account == identity)
+    }
+
+    @Test func successfulReconnectCancelsIdentityStartedDuringVerification() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "connected.\(id.rawValue)")
+        let verificationStarted = AsyncStream.makeStream(of: Void.self)
+        let verificationGate = AsyncStream.makeStream(of: Void.self)
+        let identityGate = AsyncStream.makeStream(of: Void.self)
+        let replacementIdentity = AccountIdentity(name: "Replacement")
+        let provider = QuotaProvider(
+            id: id, displayName: "Identity", accountURL: url, connection: .apiKey,
+            reset: .automaticOnly,
+            readAccount: { access in
+                if case .apiKey("replacement") = access { return replacementIdentity }
+                for await _ in identityGate.stream { break }
+                return identity
+            }
+        ) { access in
+            if case .apiKey("replacement") = access {
+                verificationStarted.continuation.finish()
+                for await _ in verificationGate.stream { break }
+            }
+            return snapshot
+        }
+        let vault = AccountMemoryVault()
+        try vault.store("original", for: id)
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
+        let reconnect = Task {
+            defer { verificationStarted.continuation.finish() }
+            try await store.connect(id, secret: "replacement")
+        }
+        for await _ in verificationStarted.stream { }
+        await store.refresh(id)
+        let oldTask = store.accountReadTask(for: id)
+        verificationGate.continuation.finish()
+        try await reconnect.value
+        #expect(oldTask?.isCancelled == true)
+        identityGate.continuation.finish()
+        await oldTask?.value
+        await waitForAccountRead(store)
+        #expect(store.states[id]?.account == replacementIdentity)
+    }
+
+    @Test func failedDisconnectKeepsPendingIdentity() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let gate = AsyncStream.makeStream(of: Void.self)
+        let provider = makeProvider { _ in
+            for await _ in gate.stream { break }
+            return identity
+        }
+        let vault = AccountMemoryVault(removeError: VaultError.inaccessible)
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
+        try await store.connect(id, secret: "original")
+        let task = try #require(store.accountReadTask(for: id))
+        await #expect(throws: VaultError.self) { try await store.disconnect(id) }
+        gate.continuation.finish()
+        await task.value
+        #expect(!task.isCancelled)
+        #expect(store.states[id]?.connected == true)
+        #expect(store.states[id]?.account == identity)
+    }
+
     @Test func connectReturnsWhileIdentityReadIsBlockedAndDisconnectIgnoresIt() async throws {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -290,10 +385,14 @@ private final class AccountBrowserLogin: ZaiBrowserLoginDriving {
 }
 
 private final class AccountMemoryVault: CredentialVaulting, @unchecked Sendable {
+    private let removeError: (any Error)?
     private let lock = NSLock()
     private var values: [ProviderID: String] = [:]
     private var readError: (any Error)?
     private(set) var interactions: [Bool] = []
+    init(removeError: (any Error)? = nil) {
+        self.removeError = removeError
+    }
     func store(_ value: String, for id: ProviderID) throws {
         lock.lock()
         values[id] = value
@@ -314,6 +413,7 @@ private final class AccountMemoryVault: CredentialVaulting, @unchecked Sendable 
         withLock { readError = nil }
     }
     func remove(_ id: ProviderID) throws {
+        if let removeError { throw removeError }
         lock.lock()
         values[id] = nil
         lock.unlock()
