@@ -126,9 +126,9 @@ struct RemoteUsageTests {
                         {"available":false,"expireTime":"2026-11-01 23:59:59"}
                     ],
                     "weekResets":[
-                        {"available":true,"expireTime":"2026-12-22 23:59:59"},
-                        {"available":true,"expireTime":"2026-12-23 23:59:59"},
-                        {"available":true,"expireTime":"2026-12-22 23:59:59"}
+                        {"available":true,"expireTime":"2027-12-22 23:59:59"},
+                        {"available":true,"expireTime":"2027-12-23 23:59:59"},
+                        {"available":true,"expireTime":"2027-12-22 23:59:59"}
                     ]
                 }}
             """#.utf8)
@@ -145,27 +145,80 @@ struct RemoteUsageTests {
             availableCount: 3,
             nextID: nil,
             nextTitle: nil,
-            nextExpiry: Date(timeIntervalSince1970: 1_797_955_199)
+            nextExpiry: Date(timeIntervalSince1970: 1_829_491_199)
         ))
         let requests = await transport.requests
         #expect(requests.count == 2)
-        #expect(requests.last?.url?.absoluteString ==
+        let resetRequest = try #require(requests.first {
+            $0.url?.path == "/api/biz/customer-package-reset/list"
+        })
+        #expect(resetRequest.url?.absoluteString ==
             "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL")
-        #expect(requests.last?.httpMethod == "GET")
-        #expect(requests.last?.httpBody == nil)
+        #expect(resetRequest.httpMethod == "GET")
+        #expect(resetRequest.httpBody == nil)
+    }
+
+    @Test func zaiValidEmptyResetInventoryReportsZero() async throws {
+        let transport = MockRemoteUsageTransport(
+            body: Self.zaiQuotaBody,
+            resetBody: Data(#"""
+                {"code":200,"success":true,"data":{"fiveHourResets":[],"weekResets":[]}}
+            """#.utf8)
+        )
+        let snapshot = try await RemoteUsage.fetch(
+            provider: .zai,
+            credential: "test-key",
+            transport: transport,
+            observedAt: observedAt
+        )
+
+        #expect(snapshot.windows.map(\.id) == ["zai-5h"])
+        #expect(snapshot.resetCredits == ResetCredits(
+            availableCount: 0,
+            nextID: nil,
+            nextTitle: nil,
+            nextExpiry: nil
+        ))
+    }
+
+    @Test func zaiExcludesExpiredResetsAndCountsMissingExpiry() async throws {
+        let transport = MockRemoteUsageTransport(
+            body: Self.zaiQuotaBody,
+            resetBody: Data(#"""
+                {"code":200,"success":true,"data":{
+                    "fiveHourResets":[
+                        {"available":true,"expireTime":"2027-01-01 00:00:00"},
+                        {"available":true}
+                    ],
+                    "weekResets":[
+                        {"available":true,"expireTime":"2027-02-01 23:59:59"},
+                        {"available":false,"expireTime":"2027-03-01 23:59:59"}
+                    ]
+                }}
+            """#.utf8)
+        )
+        let snapshot = try await RemoteUsage.fetch(
+            provider: .zai,
+            credential: "test-key",
+            transport: transport,
+            observedAt: observedAt
+        )
+
+        #expect(snapshot.resetCredits == ResetCredits(
+            availableCount: 2,
+            nextID: nil,
+            nextTitle: nil,
+            nextExpiry: Date(timeIntervalSince1970: 1_801_497_599)
+        ))
     }
 
     @Test func zaiResetReadIsBestEffort() async throws {
-        let empty = Data(#"""
-            {"code":200,"success":true,"data":{"fiveHourResets":[],"weekResets":[]}}
-        """#.utf8)
         let malformed = Data(#"""
             {"code":200,"success":true,"data":{"fiveHourResets":[],"weekResets":[
                 {"available":true,"expireTime":"not-a-date"}
             ]}}
         """#.utf8)
         let transports = [
-            MockRemoteUsageTransport(body: Self.zaiQuotaBody, resetBody: empty),
             MockRemoteUsageTransport(body: Self.zaiQuotaBody, resetBody: malformed),
             MockRemoteUsageTransport(body: Self.zaiQuotaBody, resetErrorCode: .networkConnectionLost),
         ]
@@ -303,7 +356,7 @@ struct RemoteUsageTests {
                 observedAt: observedAt
             )
             let requests = await transport.requests
-            let request = try #require(requests.first)
+            let request = try #require(requests.first { $0.url?.absoluteString == expectedURL })
             #expect(requests.count == (provider == .zai ? 2 : 1))
             #expect(request.url?.absoluteString == expectedURL)
             #expect(request.httpMethod == "GET")
@@ -314,7 +367,9 @@ struct RemoteUsageTests {
             #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
             #expect(!request.httpShouldHandleCookies)
             if provider == .zai {
-                let resetRequest = try #require(requests.last)
+                let resetRequest = try #require(requests.first {
+                    $0.url?.path == "/api/biz/customer-package-reset/list"
+                })
                 #expect(resetRequest.url?.absoluteString ==
                     "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL")
                 #expect(resetRequest.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")

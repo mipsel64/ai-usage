@@ -54,8 +54,16 @@ public enum RemoteUsage {
             throw QuotaError.notConfigured
         }
 
-        let body = try await fetch(endpoint: url, credential: credential, transport: transport)
         let receivedAt = observedAt ?? Date()
+        async let resetCredits: ResetCredits? = provider == .zai
+            ? fetchZaiResetCredits(
+                credential: credential,
+                transport: transport,
+                observedAt: receivedAt
+            )
+            : nil
+
+        let body = try await fetch(endpoint: url, credential: credential, transport: transport)
         let snapshot: QuotaSnapshot
         do {
             snapshot = try decoder(body, receivedAt)
@@ -64,16 +72,10 @@ public enum RemoteUsage {
         } catch {
             throw QuotaError.invalidResponse
         }
-        guard provider == .zai else { return snapshot }
-
-        let resetCredits = try await fetchZaiResetCredits(
-            credential: credential,
-            transport: transport
-        )
         return QuotaSnapshot(
             windows: snapshot.windows,
             observedAt: snapshot.observedAt,
-            resetCredits: resetCredits
+            resetCredits: try await resetCredits
         )
     }
 
@@ -174,7 +176,8 @@ public enum RemoteUsage {
 
     private static func fetchZaiResetCredits(
         credential: String,
-        transport: RemoteUsageTransport
+        transport: RemoteUsageTransport,
+        observedAt: Date
     ) async throws -> ResetCredits? {
         do {
             let body = try await fetch(
@@ -182,7 +185,7 @@ public enum RemoteUsage {
                 credential: credential,
                 transport: transport
             )
-            return try decodeZaiResetCredits(body)
+            return try decodeZaiResetCredits(body, observedAt: observedAt)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -190,7 +193,7 @@ public enum RemoteUsage {
         }
     }
 
-    private static func decodeZaiResetCredits(_ body: Data) throws -> ResetCredits? {
+    private static func decodeZaiResetCredits(_ body: Data, observedAt: Date) throws -> ResetCredits? {
         // Read-only inventory used by the subscription dashboard. Never redeem a card here.
         // https://github.com/LogicIncZo/zai-usage/blob/main/zai-usage.ts
         // https://github.com/yetone/magpie/blob/main/internal/provider/zhipu_resets_test.go
@@ -198,14 +201,18 @@ public enum RemoteUsage {
         guard envelope.code == 200, envelope.success, let data = envelope.data else {
             throw QuotaError.invalidResponse
         }
-        let available = (data.fiveHourResets + data.weekResets).filter(\.available)
-        guard !available.isEmpty else { return nil }
 
+        var availableCount = 0
         var nextExpiry: Date?
-        for reset in available {
-            guard let value = reset.expireTime else { continue }
+        for reset in data.fiveHourResets + data.weekResets where reset.available {
+            guard let value = reset.expireTime else {
+                availableCount += 1
+                continue
+            }
             let timestamp = value.replacingOccurrences(of: " ", with: "T") + "+08:00"
             guard let expiry = parseRFC3339(timestamp) else { throw QuotaError.invalidResponse }
+            guard expiry > observedAt else { continue }
+            availableCount += 1
             if let current = nextExpiry {
                 nextExpiry = min(current, expiry)
             } else {
@@ -213,7 +220,7 @@ public enum RemoteUsage {
             }
         }
         return ResetCredits(
-            availableCount: available.count,
+            availableCount: availableCount,
             nextID: nil,
             nextTitle: nil,
             nextExpiry: nextExpiry
