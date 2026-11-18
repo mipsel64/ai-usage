@@ -99,6 +99,21 @@ struct SubscriptionOAuthTests {
         }
     }
 
+    @Test func codexDropsOversizedIDTokenWithoutFailingLogin() async throws {
+        let access = makeJWT(["https://api.openai.com/auth": ["chatgpt_account_id": "account-123"]])
+        let body = try JSONSerialization.data(withJSONObject: [
+            "id_token": String(repeating: "x", count: 16 * 1024 + 1),
+            "access_token": access,
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+        ])
+        let transport = ScriptedOAuthTransport(responses: [.init(statusCode: 200, body: body)])
+        let tokens = try await CodexOAuth.refresh(refreshToken: "old-refresh", transport: transport, now: now)
+        #expect(tokens.accessToken == access)
+        #expect(tokens.accountID == "account-123")
+        #expect(tokens.idToken == nil)
+    }
+
     @Test func kimiDeviceAuthorizationValidatesBrowserURLsAndDefaults() async throws {
         let body = Data(#"""
             {

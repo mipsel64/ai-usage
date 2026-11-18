@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import QuotaCore
 import UserNotifications
+
 struct ProviderState {
     var connected = false
     var snapshot: QuotaSnapshot?
@@ -10,11 +11,13 @@ struct ProviderState {
     var needsAuthentication = false
     var account: AccountIdentity?
 }
+
 struct ActionError: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
     var errorDescription: String? { message }
 }
+
 @MainActor @Observable
 final class UsageStore {
     let providers: [QuotaProvider]
@@ -29,6 +32,7 @@ final class UsageStore {
     private var redeeming: Set<ProviderID> = []
     private(set) var notificationsEnabled: Bool
     private(set) var notificationStatus: String = ""
+
     init(
         providers: [QuotaProvider] = ProviderCatalog.all,
         defaults: UserDefaults = .standard,
@@ -64,9 +68,9 @@ final class UsageStore {
             states[id] = state
         }
     }
+
     func monitor() async {
         if notificationsEnabled { await updatePermissionStatus() }
-        await loadAccounts()
         while !Task.isCancelled {
             await withTaskGroup(of: Void.self) { group in
                 for provider in providers where states[provider.id]?.connected == true {
@@ -76,6 +80,7 @@ final class UsageStore {
             do { try await Task.sleep(for: .seconds(60)) } catch { return }
         }
     }
+
     func connect(_ id: ProviderID, secret: String? = nil, executable: URL? = nil) async throws {
         guard let provider = providers.first(where: { $0.id == id }), !redeeming.contains(id) else { throw QuotaError.unavailable }
         let generation = generations[id]
@@ -147,6 +152,7 @@ final class UsageStore {
             await updateAccount(for: provider, access: connectionAccess, generation: connectedGeneration)
         }
     }
+
     func disconnect(_ id: ProviderID) async throws {
         guard let provider = providers.first(where: { $0.id == id }), !redeeming.contains(id) else { throw QuotaError.unavailable }
         generations[id] = UUID()
@@ -158,28 +164,14 @@ final class UsageStore {
         for prefix in ["connected", "path", "snapshot", "oauthVersion", "account"] { defaults.removeObject(forKey: "\(prefix).\(id.rawValue)") }
         states[id] = ProviderState()
     }
-    func loadAccounts() async {
-        let pending = providers.filter {
-            $0.readAccount != nil && states[$0.id]?.connected == true
-                && states[$0.id]?.needsAuthentication != true && !loadedAccounts.contains($0.id)
-        }
-        for provider in pending { loadedAccounts.insert(provider.id) }
-        await withTaskGroup(of: Void.self) { group in
-            for provider in pending {
-                let generation = generations[provider.id]
-                group.addTask {
-                    guard let connection = try? await self.access(for: provider, interactive: false) else { return }
-                    await self.updateAccount(for: provider, access: connection, generation: generation)
-                }
-            }
-        }
-    }
+
     private func updateAccount(for provider: QuotaProvider, access: ProviderAccess, generation: UUID?) async {
         guard let readAccount = provider.readAccount else { return }
         let identity = await readAccount(access)?.sanitized()
         guard generation == generations[provider.id], states[provider.id]?.connected == true else { return }
         states[provider.id]?.account = identity
     }
+
     private func access(for provider: QuotaProvider, interactive: Bool) async throws -> ProviderAccess {
         switch provider.connection {
         case .apiKey, .browserLogin: return .apiKey(try await vault.read(provider.id, interactive: interactive))
@@ -195,6 +187,7 @@ final class UsageStore {
             return .executable(URL(fileURLWithPath: path))
         }
     }
+
     private func readOAuth(
         provider: QuotaProvider,
         tokens: OAuthTokens,
@@ -220,6 +213,7 @@ final class UsageStore {
             return (try await provider.read(.oauth(refreshed)), refreshed)
         }
     }
+
     private func validOAuth(
         _ tokens: OAuthTokens,
         for id: ProviderID,
@@ -237,6 +231,7 @@ final class UsageStore {
         }
         return refreshed
     }
+
     private static func encode(tokens: OAuthTokens) throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -244,6 +239,7 @@ final class UsageStore {
         guard let value = String(data: data, encoding: .utf8) else { throw VaultError.inaccessible }
         return value
     }
+
     func refresh(_ id: ProviderID, interactive: Bool = false) async {
         guard let provider = providers.first(where: { $0.id == id }), let state = states[id],
               state.connected, !state.loading else { return }
@@ -254,8 +250,11 @@ final class UsageStore {
             let access = try await access(for: provider, interactive: interactive)
             guard generation == generations[id] else { return }
             let reading: QuotaSnapshot
+            var readingAccess = access
             if case let .oauth(tokens) = access {
-                reading = try await readOAuth(provider: provider, tokens: tokens, generation: generation).snapshot
+                let result = try await readOAuth(provider: provider, tokens: tokens, generation: generation)
+                reading = result.snapshot
+                readingAccess = .oauth(result.tokens)
             } else {
                 reading = try await provider.read(access)
             }
@@ -267,6 +266,11 @@ final class UsageStore {
             states[id]?.message = nil
             states[id]?.needsAuthentication = false
             defaults.set(try JSONEncoder().encode(reading), forKey: "snapshot.\(id.rawValue)")
+            states[id]?.loading = false
+            if provider.readAccount != nil && !loadedAccounts.contains(id) {
+                loadedAccounts.insert(id)
+                await updateAccount(for: provider, access: readingAccess, generation: generation)
+            }
             if notificationsEnabled, let last = state.snapshot, reading.observedAt > last.observedAt {
                 let reset = !reading.refreshedWindows(since: last).isEmpty
                 let credit = last.resetCredits.flatMap { before in reading.resetCredits.map { $0.availableCount > before.availableCount } } ?? false
@@ -284,6 +288,7 @@ final class UsageStore {
             }
         }
     }
+
     func redeemableCredit(_ id: ProviderID, at now: Date) -> ResetCredits? {
         guard let state = states[id], state.connected, !state.loading, state.message == nil,
               let snapshot = state.snapshot, (0..<150).contains(now.timeIntervalSince(snapshot.observedAt)),
@@ -291,6 +296,7 @@ final class UsageStore {
               credits.nextExpiry.map({ $0 > now }) ?? true else { return nil }
         return credits
     }
+
     private func redeemOAuth(
         tokens: OAuthTokens,
         provider: QuotaProvider,
@@ -311,6 +317,7 @@ final class UsageStore {
             return try await redeem(.oauth(refreshed), creditID, key)
         }
     }
+
     func redeemReset(_ id: ProviderID, creditID: String) async throws -> String {
         guard let provider = providers.first(where: { $0.id == id }), case let .banked(_, redeem) = provider.reset,
               redeemableCredit(id, at: .now)?.nextID == creditID else {
@@ -352,6 +359,7 @@ final class UsageStore {
         case .noCredit: return "The provider reports that no reset credit is available."
         }
     }
+
     func setNotifications(_ enabled: Bool) async {
         guard enabled else {
             notificationsEnabled = false
@@ -365,6 +373,7 @@ final class UsageStore {
             notificationStatus = notificationsEnabled ? "Notifications are on." : "Allow AI Usage in System Settings → Notifications."
         } catch { notificationStatus = "macOS could not enable notifications." }
     }
+
     private func updatePermissionStatus() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         if settings.authorizationStatus != .authorized && settings.authorizationStatus != .provisional {
@@ -373,6 +382,7 @@ final class UsageStore {
             notificationStatus = "Allow AI Usage in System Settings → Notifications."
         }
     }
+
     private func postNotification(provider: QuotaProvider, reset: Bool, credit: Bool) async {
         await updatePermissionStatus()
         guard notificationsEnabled, states[provider.id]?.connected == true else { return }
@@ -384,6 +394,7 @@ final class UsageStore {
         do { try await UNUserNotificationCenter.current().add(.init(identifier: UUID().uuidString, content: content, trigger: nil)) }
         catch { notificationStatus = "macOS could not deliver the last notification." }
     }
+
     private static func safeMessage(_ error: any Error) -> String {
         if let error = error as? QuotaError { return error.localizedDescription }
         if let error = error as? ExecutableError { return error.localizedDescription }

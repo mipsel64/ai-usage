@@ -222,13 +222,20 @@ private func decodeToken(
         accountID = nil
     }
 
+    let displayIDToken = payload.idToken.flatMap { value -> String? in
+        guard provider == .codex, !value.isEmpty, value.utf8.count <= 16 * 1024,
+              value.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
+        else { return nil }
+        return value
+    }
+
     do {
         return try OAuthTokens(
             accessToken: payload.accessToken,
             refreshToken: payload.refreshToken,
             expiresAt: now.addingTimeInterval(expiresIn),
             accountID: accountID,
-            idToken: provider == .codex ? payload.idToken : nil
+            idToken: displayIDToken
         ).validated()
     } catch {
         throw OAuthError.invalidResponse
