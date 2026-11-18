@@ -159,17 +159,24 @@ struct CredentialVaultTests {
         }
     }
 
-    @Test func staleTemporaryFileIsReplacedAndRemoved() async throws {
+    @Test func staleTemporaryFilesOfOneProviderAreDeleted() async throws {
         try await withVault { vault, directory, _ in
-            let temporary = directory.appendingPathComponent(".\(id.rawValue).tmp")
-            try write("stale-token", to: temporary, mode: 0o600)
+            let stale = directory.appendingPathComponent(".\(id.rawValue).\(UUID().uuidString).tmp")
+            let otherProvider = directory.appendingPathComponent(".\(id.rawValue)-max.\(UUID().uuidString).tmp")
+            try write("stale-token", to: stale, mode: 0o600)
+            try write("other-token", to: otherProvider, mode: 0o600)
+
             try vault.store("synthetic-token", for: id)
-            #expect(!FileManager.default.fileExists(atPath: temporary.path))
+            #expect(!FileManager.default.fileExists(atPath: stale.path))
+            #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .filter { $0.hasSuffix(".tmp") } == [otherProvider.lastPathComponent])
             #expect(try await vault.read(id, interactive: false) == "synthetic-token")
 
-            try write("stale-token", to: temporary, mode: 0o600)
+            try write("stale-token", to: stale, mode: 0o600)
             try vault.remove(id)
-            #expect(!FileManager.default.fileExists(atPath: temporary.path))
+            #expect(!FileManager.default.fileExists(atPath: stale.path))
+            #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(id.rawValue).path))
+            #expect(FileManager.default.fileExists(atPath: otherProvider.path))
         }
     }
 
@@ -200,7 +207,7 @@ struct CredentialVaultTests {
     @Test func keychainMoveDoesNotOverwriteAReconnect() async throws {
         let gate = Gate()
         let id = id
-        try await withVault(legacyValues: [id: "old-token"], gate: gate) { vault, directory, legacy in
+        try await withVault(legacyValues: [id: "old-token"], gates: [id: gate]) { vault, directory, legacy in
             let moved = Task { try await vault.read(id, interactive: false) }
             await gate.waitUntilEntered()
             try vault.store("new-token", for: id)
@@ -215,7 +222,7 @@ struct CredentialVaultTests {
     @Test func keychainMoveDoesNotUndoADisconnect() async throws {
         let gate = Gate()
         let id = id
-        try await withVault(legacyValues: [id: "old-token"], gate: gate) { vault, directory, legacy in
+        try await withVault(legacyValues: [id: "old-token"], gates: [id: gate]) { vault, directory, legacy in
             let moved = Task { try await vault.read(id, interactive: false) }
             await gate.waitUntilEntered()
             try vault.remove(id)
@@ -227,12 +234,50 @@ struct CredentialVaultTests {
         }
     }
 
+    @Test func keychainMoveOfOneProviderDoesNotCancelAnother() async throws {
+        let first = id
+        let second = ProviderID(rawValue: "codex")
+        let firstGate = Gate()
+        let secondGate = Gate()
+        try await withVault(legacyValues: [first: "first-token", second: "second-token"],
+                            gates: [first: firstGate, second: secondGate]) { vault, directory, _ async throws in
+            let firstMove = Task { try await vault.read(first, interactive: false) }
+            let secondMove = Task { try await vault.read(second, interactive: false) }
+            await firstGate.waitUntilEntered()
+            await secondGate.waitUntilEntered()
+            await firstGate.open()
+            #expect(try await firstMove.value == "first-token")
+            await secondGate.open()
+
+            #expect(try await secondMove.value == "second-token")
+            #expect(try String(contentsOf: directory.appendingPathComponent(second.rawValue), encoding: .utf8) == "second-token")
+        }
+    }
+
+    @Test func failedStoreDoesNotCancelAWaitingKeychainMove() async throws {
+        let gate = Gate()
+        let id = id
+        try await withVault(legacyValues: [id: "legacy-token"], gates: [id: gate]) { vault, directory, _ in
+            let moved = Task { try await vault.read(id, interactive: false) }
+            await gate.waitUntilEntered()
+            let elsewhere = directory.deletingLastPathComponent().appendingPathComponent("elsewhere", isDirectory: true)
+            try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: elsewhere)
+            #expect(throws: VaultError.inaccessible) { try vault.store("new-token", for: id) }
+            try FileManager.default.removeItem(at: directory)
+            await gate.open()
+
+            #expect(try await moved.value == "legacy-token")
+            #expect(try String(contentsOf: directory.appendingPathComponent(id.rawValue), encoding: .utf8) == "legacy-token")
+        }
+    }
+
     private func withVault(legacyValues: [ProviderID: String] = [:], legacyError: (any Error)? = nil,
-                           legacyRemoveError: (any Error)? = nil, gate: Gate? = nil,
+                           legacyRemoveError: (any Error)? = nil, gates: [ProviderID: Gate] = [:],
                            _ body: (CredentialVault, URL, FakeLegacyCredentials) async throws -> Void) async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
-        let legacy = FakeLegacyCredentials(values: legacyValues, readError: legacyError, removeError: legacyRemoveError, gate: gate)
+        let legacy = FakeLegacyCredentials(values: legacyValues, readError: legacyError, removeError: legacyRemoveError, gates: gates)
         try await body(CredentialVault(directory: directory, legacy: legacy), directory, legacy)
     }
 
@@ -258,15 +303,15 @@ private final class FakeLegacyCredentials: LegacyCredentialReading, @unchecked S
     private var values: [ProviderID: String]
     private let readError: (any Error)?
     private let removeError: (any Error)?
-    private let gate: Gate?
+    private let gates: [ProviderID: Gate]
     private var readInteractions: [Bool] = []
     private var removedIDs: [ProviderID] = []
 
-    init(values: [ProviderID: String], readError: (any Error)?, removeError: (any Error)?, gate: Gate?) {
+    init(values: [ProviderID: String], readError: (any Error)?, removeError: (any Error)?, gates: [ProviderID: Gate]) {
         self.values = values
         self.readError = readError
         self.removeError = removeError
-        self.gate = gate
+        self.gates = gates
     }
 
     var reads: [Bool] { withLock { readInteractions } }
@@ -280,7 +325,7 @@ private final class FakeLegacyCredentials: LegacyCredentialReading, @unchecked S
             guard let value = values[id] else { return .failure(QuotaError.notConfigured) }
             return .success(value)
         }
-        await gate?.enter()
+        await gates[id]?.enter()
         return try result.get()
     }
 
