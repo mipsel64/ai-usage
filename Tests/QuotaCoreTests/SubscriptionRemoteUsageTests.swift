@@ -129,9 +129,29 @@ struct SubscriptionRemoteUsageTests {
     }
 
     @Test func codexNamesWindowsFromTheirReportedLength() async throws {
-        let snapshot = try await fetchCodex(#"{"rate_limit":{"primary_window":{"used_percent":15,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":40,"limit_window_seconds":604800,"reset_at":1800060000}},"additional_rate_limits":[{"limit_id":"codex_spark","limit_name":"GPT-5.3-Codex-Spark","primary_window":{"used_percent":5,"limit_window_seconds":18000},"secondary_window":{"used_percent":10,"limit_window_seconds":12345}}]}"#)
-        #expect(snapshot.windows.map(\.id) == ["codex.primary", "codex.secondary", "codex_spark.primary", "codex_spark.secondary"])
-        #expect(snapshot.windows.map(\.title) == ["5-hour", "Weekly", "5-hour GPT-5.3-Codex-Spark", "GPT-5.3-Codex-Spark Secondary"])
+        let snapshot = try await fetchCodex(#"{"rate_limit":{"primary_window":{"used_percent":15,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":40,"limit_window_seconds":604800,"reset_at":1800060000}},"additional_rate_limits":[{"metered_feature":"codex_spark","limit_name":"GPT-5.3-Codex-Spark","rate_limit":{"primary_window":{"used_percent":5,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":10,"limit_window_seconds":604800,"reset_at":1800060000}}},{"metered_feature":"codex_other","limit_name":"Other","rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":12345,"reset_at":1800000000}}},{"limit_name":"Unnamed","rate_limit":{"primary_window":{"used_percent":30,"reset_at":1800000000}}}]}"#)
+        #expect(snapshot.windows.map(\.id) == [
+            "codex.primary", "codex.secondary", "codex_spark.primary", "codex_spark.secondary", "codex_other.primary", "additional-2.primary",
+        ])
+        #expect(snapshot.windows.map(\.title) == [
+            "5-hour", "Weekly", "5-hour GPT-5.3-Codex-Spark", "Weekly GPT-5.3-Codex-Spark", "Other Primary", "Unnamed Primary",
+        ])
+        #expect(snapshot.windows.map(\.remainingPercent) == [85, 60, 95, 90, 80, 70])
+    }
+
+    @Test func codexAdditionalLimitWithoutRateLimitHasNoWindows() async throws {
+        let snapshot = try await fetchCodex(#"{"rate_limit":{"primary_window":{"used_percent":15,"limit_window_seconds":18000,"reset_at":1800000000}},"additional_rate_limits":[{"metered_feature":"codex_other","limit_name":"Other","rate_limit":null},{"metered_feature":"codex_spark","limit_name":"Spark"}]}"#)
+        #expect(snapshot.windows == [QuotaWindow(id: "codex.primary", title: "5-hour", remainingPercent: 85, resetAt: Date(timeIntervalSince1970: 1_800_000_000))])
+    }
+
+    @Test(arguments: [
+        #"[{"metered_feature":"codex_spark","limit_name":"A","rate_limit":{"primary_window":{"used_percent":5,"reset_at":1800000000}}},{"metered_feature":"codex_spark","limit_name":"B","rate_limit":{"primary_window":{"used_percent":5,"reset_at":1800000000}}}]"#,
+        #"[{"metered_feature":"codex_spark","limit_name":"A","rate_limit":{"primary_window":{"used_percent":100.1,"reset_at":1800000000}}}]"#,
+    ])
+    func codexRejectsInvalidAdditionalLimit(additional: String) async {
+        await #expect(throws: QuotaError.invalidResponse) {
+            _ = try await fetchCodex(#"{"rate_limit":{"primary_window":{"used_percent":15,"reset_at":1800000000}},"additional_rate_limits":"# + additional + "}")
+        }
     }
 
     @Test(arguments: [
