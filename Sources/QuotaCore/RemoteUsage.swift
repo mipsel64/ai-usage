@@ -3,6 +3,9 @@ import Foundation
 /// Fetches account quota directly from the supported first-party provider APIs.
 public enum RemoteUsage {
     private static let zaiURL = URL(string: "https://api.z.ai/api/monitor/usage/quota/limit")!
+    private static let zaiResetURL = URL(
+        string: "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL"
+    )!
     private static let kimiURL = URL(string: "https://api.kimi.com/coding/v1/usages")!
     static let maximumResponseBytes = 64 * 1024
 
@@ -53,13 +56,25 @@ public enum RemoteUsage {
 
         let body = try await fetch(endpoint: url, credential: credential, transport: transport)
         let receivedAt = observedAt ?? Date()
+        let snapshot: QuotaSnapshot
         do {
-            return try decoder(body, receivedAt)
+            snapshot = try decoder(body, receivedAt)
         } catch let error as QuotaError {
             throw error
         } catch {
             throw QuotaError.invalidResponse
         }
+        guard provider == .zai else { return snapshot }
+
+        let resetCredits = try await fetchZaiResetCredits(
+            credential: credential,
+            transport: transport
+        )
+        return QuotaSnapshot(
+            windows: snapshot.windows,
+            observedAt: snapshot.observedAt,
+            resetCredits: resetCredits
+        )
     }
 
     /// Reads a compiled, first-party HTTPS endpoint using the shared quota security boundary.
@@ -157,9 +172,59 @@ public enum RemoteUsage {
         }
     }
 
+    private static func fetchZaiResetCredits(
+        credential: String,
+        transport: RemoteUsageTransport
+    ) async throws -> ResetCredits? {
+        do {
+            let body = try await fetch(
+                endpoint: zaiResetURL,
+                credential: credential,
+                transport: transport
+            )
+            return try decodeZaiResetCredits(body)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
+    }
+
+    private static func decodeZaiResetCredits(_ body: Data) throws -> ResetCredits? {
+        // Read-only inventory used by the subscription dashboard. Never redeem a card here.
+        // https://github.com/LogicIncZo/zai-usage/blob/main/zai-usage.ts
+        // https://github.com/yetone/magpie/blob/main/internal/provider/zhipu_resets_test.go
+        let envelope = try JSONDecoder().decode(ZaiResetEnvelope.self, from: body)
+        guard envelope.code == 200, envelope.success, let data = envelope.data else {
+            throw QuotaError.invalidResponse
+        }
+        let available = (data.fiveHourResets + data.weekResets).filter(\.available)
+        guard !available.isEmpty else { return nil }
+
+        var nextExpiry: Date?
+        for reset in available {
+            guard let value = reset.expireTime else { continue }
+            let timestamp = value.replacingOccurrences(of: " ", with: "T") + "+08:00"
+            guard let expiry = parseRFC3339(timestamp) else { throw QuotaError.invalidResponse }
+            if let current = nextExpiry {
+                nextExpiry = min(current, expiry)
+            } else {
+                nextExpiry = expiry
+            }
+        }
+        return ResetCredits(
+            availableCount: available.count,
+            nextID: nil,
+            nextTitle: nil,
+            nextExpiry: nextExpiry
+        )
+    }
+
     private static func decodeZai(_ body: Data, observedAt: Date) throws -> QuotaSnapshot {
         // The monitor endpoint is used by the Coding Plan dashboard and open-source CLI integrations.
-        // https://github.com/shaftoe/pi-zai-usage/blob/master/src/api.ts
+        // Weekly is unit 6 with number 1; legacy readers also accept number 7 or an omitted number.
+        // https://openusage.sh/docs/providers/zai/
+        // https://netspeedy.github.io/zquota/windows/
         // The plan's 5-hour and weekly reset semantics are documented at
         // https://docs.z.ai/devpack/overview and https://docs.z.ai/devpack/faq.
         let envelope = try JSONDecoder().decode(ZaiEnvelope.self, from: body)
@@ -351,6 +416,22 @@ private struct ZaiData: Decodable {
     let limits: [ZaiLimit]
 }
 
+private struct ZaiResetEnvelope: Decodable {
+    let code: Int
+    let success: Bool
+    let data: ZaiResetData?
+}
+
+private struct ZaiResetData: Decodable {
+    let fiveHourResets: [ZaiResetCard]
+    let weekResets: [ZaiResetCard]
+}
+
+private struct ZaiResetCard: Decodable {
+    let available: Bool
+    let expireTime: String?
+}
+
 private struct ZaiLimit: Decodable {
     let type: String
     let unit: Int?
@@ -387,7 +468,8 @@ private struct ZaiLimit: Decodable {
         case ("TOKENS_LIMIT", .some(3), .some(5)), ("CREDIT_LIMIT", .some(3), .some(5)),
              ("TOKENS_LIMIT", .some(3), nil), ("CREDIT_LIMIT", .some(3), nil):
             return .fiveHour
-        case ("TOKENS_LIMIT", .some(6), .some(7)), ("CREDIT_LIMIT", .some(6), .some(7)),
+        case ("TOKENS_LIMIT", .some(6), .some(1)), ("CREDIT_LIMIT", .some(6), .some(1)),
+             ("TOKENS_LIMIT", .some(6), .some(7)), ("CREDIT_LIMIT", .some(6), .some(7)),
              ("TOKENS_LIMIT", .some(6), nil), ("CREDIT_LIMIT", .some(6), nil):
             return .weekly
         case ("TIME_LIMIT", .some(5), .some(1)):
