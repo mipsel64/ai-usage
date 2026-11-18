@@ -13,7 +13,7 @@ struct NotificationsAccountHeader: View {
                 Text("Notifications")
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
-                Text("AI Usage tells you when a quota window resets.")
+                Text("AI Usage tells you when a quota window resets or runs low.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
