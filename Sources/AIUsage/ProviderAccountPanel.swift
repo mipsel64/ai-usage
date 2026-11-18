@@ -46,7 +46,11 @@ struct ProviderAccountPanel: View {
     var body: some View {
         Form {
             Section {
-                ProviderAccountHeader(provider: provider)
+                ProviderAccountHeader(
+                    provider: provider,
+                    accountHost: accountHost,
+                    openAccountPage: openAccountPage
+                )
             }
 
             if state?.connected == true {
@@ -85,13 +89,6 @@ struct ProviderAccountPanel: View {
         }
         .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Usage Portal", systemImage: "arrow.up.right", action: openAccountPage)
-                    .labelStyle(.titleAndIcon)
-                    .accessibilityHint("Opens \(accountHost) in your default browser.")
-            }
-        }
     }
 
     private var disconnectButtonTitle: String {
