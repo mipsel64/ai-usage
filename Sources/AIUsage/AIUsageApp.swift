@@ -26,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 }
 
+private let menuBarSymbolPointSize: CGFloat = 18
+
 @main
 struct AIUsageApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -34,11 +36,19 @@ struct AIUsageApp: App {
         MenuBarExtra {
             QuotaMenu(store: delegate.store)
         } label: {
-            Image(systemName: "gauge.with.dots.needle.50percent")
+            Image(nsImage: menuBarSymbol)
                 .accessibilityLabel("AI Usage")
         }.menuBarExtraStyle(.window)
         Settings {
             AccountsView(store: delegate.store)
         }
+    }
+
+    // MenuBarExtra ignores SwiftUI font modifiers on its label, so the size is set on the NSImage.
+    private var menuBarSymbol: NSImage {
+        let image = NSImage(systemSymbolName: "gauge.with.dots.needle.50percent", accessibilityDescription: "AI Usage")!
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: menuBarSymbolPointSize, weight: .regular))!
+        image.isTemplate = true
+        return image
     }
 }

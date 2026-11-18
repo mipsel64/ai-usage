@@ -7,10 +7,9 @@ struct MenuPopoverBackdrop: View {
 
     @ViewBuilder
     var body: some View {
-        if #available(macOS 26.0, *), !reduceTransparency {
-            Color.clear
-                .glassEffect(.regular, in: .rect(cornerRadius: popoverCornerRadius))
-                .background(MenuPopoverWindow(needsMaterial: false))
+        if #available(macOS 26.0, *) {
+            // macOS 26 draws the panel background and rim itself; a second shape doubles the rim.
+            EmptyView()
         } else {
             MenuPopoverWindow(needsMaterial: !reduceTransparency)
                 .background {
