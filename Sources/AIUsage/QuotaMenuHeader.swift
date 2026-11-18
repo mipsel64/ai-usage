@@ -4,6 +4,9 @@ import SwiftUI
 @MainActor
 struct QuotaMenuHeader: View {
     let store: UsageStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let refreshButtonSize: CGFloat = 26
 
     private var latestObservation: Date? {
         store.states.values
@@ -19,6 +22,10 @@ struct QuotaMenuHeader: View {
         }
     }
 
+    private var isRefreshing: Bool {
+        store.states.values.contains { $0.connected && $0.loading }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Text("AI Usage")
@@ -30,15 +37,30 @@ struct QuotaMenuHeader: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            Button("Refresh All", systemImage: "arrow.clockwise", action: refreshAll)
+            Button(action: refreshAll) {
+                Label {
+                    Text("Refresh All")
+                } icon: {
+                    refreshIcon
+                }
+            }
                 .labelStyle(.iconOnly)
-                .usageActionStyle()
-                .buttonBorderShape(.circle)
-                .controlSize(.small)
-                .frame(width: 26, height: 26)
-                .disabled(refreshableProviders.isEmpty)
+                .buttonStyle(.borderless)
+                .frame(width: Self.refreshButtonSize, height: Self.refreshButtonSize)
+                .contentShape(.rect)
+                .disabled(refreshableProviders.isEmpty && !isRefreshing)
                 .accessibilityLabel("Refresh All")
                 .help("Refresh all connected providers")
+        }
+    }
+
+    @ViewBuilder
+    private var refreshIcon: some View {
+        let icon = Image(systemName: "arrow.clockwise")
+        if #available(macOS 15.0, *) {
+            icon.symbolEffect(.rotate, options: .repeat(.continuous), isActive: isRefreshing && !reduceMotion)
+        } else {
+            icon
         }
     }
 
