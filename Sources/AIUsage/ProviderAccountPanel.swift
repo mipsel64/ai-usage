@@ -32,7 +32,6 @@ struct ProviderAccountPanel: View {
         case .oauth: "OAuth"
         case .browserLogin: "Browser sign-in"
         case .apiKey: "Subscription API key"
-        case .statusLine: "Claude Code sign-in"
         case .signedExecutable: "Codex CLI sign-in"
         }
     }

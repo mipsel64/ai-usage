@@ -17,7 +17,6 @@ A quota refresh reads data. A quota reset changes an account. Keep those actions
 
 - `Sources/QuotaCore`: adapters, data contracts, and reset detection. Keep SwiftUI and Keychain access out of this target.
 - `Sources/AIUsage`: menu, connections, credentials, polling, local notifications, and user confirmation. The catalog supplies the provider list. Do not switch on provider names here.
-- `Sources/ClaudeQuotaCapture`: project the Claude Code status-line stream to quota fields only. Never log or retain the raw payload.
 - Keep API keys in the login Keychain. Do not read browser cookies, CLI token files, or another app’s Keychain items. Send each key only to its fixed provider endpoint. Reject redirects. Limit response size and time.
 - Verify the selected executable against the provider’s signing requirement before launch. Do not run a shell or search `PATH`. Keep notifications and error messages free of private payloads.
 

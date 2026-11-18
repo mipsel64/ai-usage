@@ -1,7 +1,6 @@
 import Foundation
 
 public enum ProviderConnection: Sendable {
-    case statusLine(toolName: String, helperName: String, desktopPlugin: Bool = false)
     case signedExecutable(requirement: SignedExecutable)
     case apiKey
     case browserLogin
@@ -9,8 +8,6 @@ public enum ProviderConnection: Sendable {
 }
 
 public enum ProviderAccess: Sendable {
-    case local
-    case desktopFeed
     case executable(URL)
     case apiKey(String)
     case oauth(OAuthTokens)

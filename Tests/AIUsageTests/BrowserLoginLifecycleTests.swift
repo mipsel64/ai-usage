@@ -45,7 +45,6 @@ struct BrowserLoginLifecycleTests {
         #expect(store.states[id]?.connected == false)
         await #expect(throws: QuotaError.notConfigured) { try await store.connect(id, secret: "manual-key") }
         await #expect(throws: QuotaError.notConfigured) { try await store.connect(id, executable: account) }
-        await #expect(throws: QuotaError.notConfigured) { try await store.connect(id, desktopFeed: true) }
         #expect(login.loginCalls == 1)
     }
 

@@ -76,19 +76,11 @@ final class UsageStore {
         }
     }
 
-    func usesDesktopFeed(_ id: ProviderID) -> Bool {
-        defaults.bool(forKey: "desktopFeed.\(id.rawValue)")
-    }
-
-    func connect(_ id: ProviderID, secret: String? = nil, executable: URL? = nil, desktopFeed: Bool = false) async throws {
+    func connect(_ id: ProviderID, secret: String? = nil, executable: URL? = nil) async throws {
         guard let provider = providers.first(where: { $0.id == id }), !redeeming.contains(id) else { throw QuotaError.unavailable }
         let generation = generations[id]
         let firstReading: QuotaSnapshot?
         switch provider.connection {
-        case let .statusLine(_, _, supportsDesktop):
-            guard !desktopFeed || supportsDesktop else { throw QuotaError.notConfigured }
-            firstReading = nil
-            defaults.set(desktopFeed, forKey: "desktopFeed.\(id.rawValue)")
         case let .signedExecutable(requirement):
             guard let executable else { throw QuotaError.notConfigured }
             _ = try await Task.detached { try requirement.validate(executable) }.value
@@ -104,14 +96,14 @@ final class UsageStore {
             guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
             try vault.store(key, for: id)
         case .browserLogin:
-            guard secret == nil, executable == nil, !desktopFeed else { throw QuotaError.notConfigured }
+            guard secret == nil, executable == nil else { throw QuotaError.notConfigured }
             let key = try await browserLogin.login(id)
             guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
             firstReading = try await provider.read(.apiKey(key))
             guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
             try vault.store(key, for: id)
         case .oauth:
-            guard secret == nil, executable == nil, !desktopFeed else { throw QuotaError.notConfigured }
+            guard secret == nil, executable == nil else { throw QuotaError.notConfigured }
             let tokens = try await oauth.login(id)
             guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
             let result = try await readOAuth(
@@ -145,13 +137,12 @@ final class UsageStore {
         case .apiKey, .browserLogin, .oauth: try vault.remove(id)
         default: break
         }
-        for prefix in ["connected", "path", "snapshot", "desktopFeed", "oauthVersion"] { defaults.removeObject(forKey: "\(prefix).\(id.rawValue)") }
+        for prefix in ["connected", "path", "snapshot", "oauthVersion"] { defaults.removeObject(forKey: "\(prefix).\(id.rawValue)") }
         states[id] = ProviderState()
     }
 
     private func access(for provider: QuotaProvider, interactive: Bool) async throws -> ProviderAccess {
         switch provider.connection {
-        case .statusLine: return usesDesktopFeed(provider.id) ? .desktopFeed : .local
         case .apiKey, .browserLogin: return .apiKey(try await vault.read(provider.id, interactive: interactive))
         case .oauth:
             let serialized = try await vault.read(provider.id, interactive: interactive)
@@ -251,11 +242,7 @@ final class UsageStore {
             if case QuotaError.unauthorized = error { states[id]?.needsAuthentication = true }
             if case .oauth = provider.connection, case QuotaError.notConfigured = error { states[id]?.needsAuthentication = true }
             if case OAuthError.unauthorized = error { states[id]?.needsAuthentication = true }
-            if case .statusLine = provider.connection {
-                states[id]?.message = usesDesktopFeed(id)
-                    ? "No current Desktop quota reading. Check the plugin and use a local Code session."
-                    : "No current status-line reading. Check setup and use \(provider.displayName)."
-            } else if case .oauth = provider.connection, case QuotaError.notConfigured = error {
+            if case .oauth = provider.connection, case QuotaError.notConfigured = error {
                 states[id]?.message = "Reconnect with \(provider.displayName) to use direct OAuth."
             } else {
                 states[id]?.message = Self.safeMessage(error)

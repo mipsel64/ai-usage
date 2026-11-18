@@ -360,21 +360,11 @@ struct QuotaMenu: View {
     }
 }
 
-private func supportsDesktopFeed(_ provider: QuotaProvider) -> Bool {
-    guard case let .statusLine(_, _, desktopPlugin) = provider.connection else { return false }
-    return desktopPlugin
-}
-
 @MainActor
-private func connectionStatus(for provider: QuotaProvider, state: ProviderState?, store: UsageStore) -> String {
+private func connectionStatus(state: ProviderState?) -> String {
     if state?.needsAuthentication == true { return "Access denied" }
-    guard supportsDesktopFeed(provider) else {
-        guard state?.connected == true else { return "Monitoring off" }
-        return state?.snapshot == nil ? "Waiting for quota" : "Monitoring on"
-    }
     guard state?.connected == true else { return "Monitoring off" }
-    let source = store.usesDesktopFeed(provider.id) ? "Desktop feed" : "Status-line feed"
-    return state?.snapshot == nil ? "\(source) · waiting for quota" : "\(source) · monitoring on"
+    return state?.snapshot == nil ? "Waiting for quota" : "Monitoring on"
 }
 
 private struct PendingReset {
@@ -453,8 +443,6 @@ struct ConnectionView: View {
     @ViewState private var executables: [ProviderID: URL] = [:]
     @ViewState private var errors: [ProviderID: String] = [:]
     @ViewState private var busyProviders: Set<ProviderID> = []
-    @ViewState private var desktopFeedSelections: [ProviderID: Bool] = [:]
-    @ViewState private var copiedStatusLineCommand = false
 
     private var visibleProviders: [QuotaProvider] {
         guard !searchText.isEmpty else { return store.providers }
@@ -522,7 +510,7 @@ struct ConnectionView: View {
                                 VStack(spacing: 0) {
                                     SettingsValueRow(
                                         title: "Monitoring",
-                                        value: connectionStatus(for: provider, state: store.states[id], store: store)
+                                        value: connectionStatus(state: store.states[id])
                                     )
                                     if let date = store.states[id]?.snapshot?.observedAt {
                                         Divider()
@@ -555,7 +543,6 @@ struct ConnectionView: View {
         }
         .onChange(of: selection) {
             secrets.removeAll()
-            copiedStatusLineCommand = false
         }
     }
 
@@ -612,8 +599,6 @@ struct ConnectionView: View {
 
         VStack(alignment: .leading, spacing: 14) {
             switch provider.connection {
-            case let .statusLine(toolName, helperName, desktopPlugin):
-                statusLineSetup(for: provider, toolName: toolName, helperName: helperName, desktopPlugin: desktopPlugin)
             case .signedExecutable:
                 signedExecutableSetup(for: provider)
             case .apiKey:
@@ -694,14 +679,11 @@ struct ConnectionView: View {
     private func disconnectButtonTitle(for provider: QuotaProvider) -> String {
         switch provider.connection {
         case .oauth, .browserLogin: return "Disconnect"
-        default: return store.usesDesktopFeed(provider.id) ? "Stop Monitoring" : "Remove Connection"
+        default: return "Remove Connection"
         }
     }
 
     private func connectButtonTitle(for provider: QuotaProvider, connected: Bool) -> String {
-        if usesDesktopFeedSelection(for: provider) {
-            return connected ? "Restart Monitoring" : "Start Monitoring"
-        }
         if case .apiKey = provider.connection { return connected ? "Verify & Replace Key" : "Verify & Connect" }
         switch provider.connection {
         case .oauth, .browserLogin:
@@ -709,84 +691,6 @@ struct ConnectionView: View {
         default:
             return connected ? "Reconnect" : "Connect"
         }
-    }
-
-
-    @ViewBuilder
-    private func statusLineSetup(
-        for provider: QuotaProvider,
-        toolName: String,
-        helperName: String,
-        desktopPlugin: Bool
-    ) -> some View {
-        if desktopPlugin {
-            VStack(alignment: .leading, spacing: 10) {
-                Picker("Quota source", selection: desktopFeedBinding(for: provider)) {
-                    Text("Claude Desktop local plugin").tag(true)
-                    Text("\(toolName) status-line helper").tag(false)
-                }
-                .pickerStyle(.radioGroup)
-
-                Text("The source preference is saved only when you connect or reconnect.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if usesDesktopFeedSelection(for: provider) {
-                    ClaudeDesktopSetupView()
-                } else {
-                    statusLineInstructions(toolName: toolName, helperName: helperName)
-                }
-            }
-        } else {
-            statusLineInstructions(toolName: toolName, helperName: helperName)
-        }
-    }
-
-    private func statusLineInstructions(toolName: String, helperName: String) -> some View {
-        let command = statusLineCommand(helperName: helperName)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("Merge this standalone helper into statusLine.command in your \(toolName) settings, then connect below.")
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("To keep an existing status line, append --passthrough | <your existing command>. Your existing command receives \(toolName)'s original JSON payload.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(command)
-                .font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
-
-            HStack {
-                Button(copiedStatusLineCommand ? "Copied" : "Copy Command") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(command, forType: .string)
-                    copiedStatusLineCommand = true
-                }
-                Text("The app does not change your \(toolName) settings.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func desktopFeedBinding(for provider: QuotaProvider) -> Binding<Bool> {
-        Binding(
-            get: { usesDesktopFeedSelection(for: provider) },
-            set: { selected in
-                desktopFeedSelections[provider.id] = selected
-                errors[provider.id] = nil
-            }
-        )
-    }
-
-    private func usesDesktopFeedSelection(for provider: QuotaProvider) -> Bool {
-        guard supportsDesktopFeed(provider) else { return false }
-        return desktopFeedSelections[provider.id] ?? (store.states[provider.id]?.connected != true || store.usesDesktopFeed(provider.id))
     }
 
     private func signedExecutableSetup(for provider: QuotaProvider) -> some View {
@@ -838,17 +742,8 @@ struct ConnectionView: View {
         }
     }
 
-    private func statusLineCommand(helperName: String) -> String {
-        let helper = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Helpers")
-            .appendingPathComponent(helperName)
-        return shellQuoted(helper.path)
-    }
-
     private func canConnect(_ provider: QuotaProvider) -> Bool {
         switch provider.connection {
-        case .statusLine:
-            return true
         case .signedExecutable:
             return executables[provider.id] != nil
         case .apiKey:
@@ -882,7 +777,7 @@ struct ConnectionView: View {
         switch provider.connection {
         case .signedExecutable:
             executable = executables[id]
-        case .statusLine, .apiKey, .oauth, .browserLogin:
+        case .apiKey, .oauth, .browserLogin:
             executable = nil
         }
 
@@ -899,8 +794,7 @@ struct ConnectionView: View {
             try await store.connect(
                 id,
                 secret: secret,
-                executable: executable,
-                desktopFeed: usesDesktopFeedSelection(for: provider)
+                executable: executable
             )
         } catch {
             errors[id] = connectionMessage(for: error)
@@ -944,8 +838,4 @@ private func connectionMessage(for error: Error) -> String {
     case .unavailable:
         return "The provider is unavailable. Try again later."
     }
-}
-
-private func shellQuoted(_ value: String) -> String {
-    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }

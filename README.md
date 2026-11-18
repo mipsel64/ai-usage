@@ -11,7 +11,7 @@ Use macOS 14.4 or later with the Swift 6 toolchain. Run `bash Packaging/setup-de
 Open **Connections** in the menu. Enable individual providers and allow reset notifications if you want them. The app polls connected providers at launch and approximately once a minute while running. You can also refresh a provider from the menu. Failed reads do not refill quota: the menu keeps the last reading with its observation time. A missing reset date means the provider did not report one.
 Click the gauge to see current quota and reset times. Use **Connect** beside a provider to start subscription sign-in directly. Claude asks you to paste the authorization code shown after browser sign-in. Codex returns through a loopback callback. Kimi uses device authorization and shows its sign-in code while the app waits. Z.ai uses browser sign-in and creates its subscription credential automatically.
 
-You can also open **Manage Accounts…**, select a provider, and choose its connect action. OAuth tokens and the Z.ai subscription key stay in the login Keychain. Choose **Notifications** in the sidebar to turn on reset alerts. AI Usage checks active sources approximately once a minute while running. If a read fails, the menu keeps the last observation and its time. A missing reset date means the provider did not report one.
+You can also open **Manage Accounts…**, select a provider, and choose its connect action. OAuth tokens and the Z.ai subscription key stay in the login Keychain. Direct OAuth reuses the providers’ CLI client configuration. Provider terms and undocumented endpoints can change. AI Usage reports endpoint failures and does not substitute estimated quota. Choose **Notifications** in the sidebar to turn on reset alerts. AI Usage checks active sources approximately once a minute while running. If a read fails, the menu keeps the last observation and its time. A missing reset date means the provider did not report one.
 
 The menu and account controls use native Liquid Glass on macOS 26 and later. With Reduce Transparency enabled, or on earlier supported versions, the app uses bordered controls.
 
@@ -21,10 +21,6 @@ The menu and account controls use native Liquid Glass on macOS 26 and later. Wit
 | Codex | Choose **Connect with Codex** and complete browser OAuth. AI Usage listens on `127.0.0.1:1455` for the callback, then reads account-scoped usage directly. | Confirm redemption of one identified, free banked reset in the app. If no eligible credit ID is reported, use the [Codex usage dashboard](https://chatgpt.com/codex/settings/usage). |
 | Z.ai | Choose **Connect with Z.ai** and complete browser sign-in. AI Usage captures the `zcode://` callback automatically and restores the previous URL handler. A branded paste dialog remains available as a fallback. The app creates an **AI Usage** subscription key and stores it in the login Keychain. | Open the [subscription page](https://z.ai/manage-apikey/subscription). Five-hour or weekly reset cards depend on the account and campaign. |
 | Kimi | Choose **Connect with Kimi**, open the device-authorization page, and confirm the displayed code. AI Usage polls until authorization finishes or expires. | Kimi documents automatic resets. The menu links to the [Kimi Code Console](https://www.kimi.com/code/console); an Extra Usage purchase is not a reset. |
-
-### Claude Code setup
-Copy the helper command from Connections into the `statusLine` section of your Claude Code settings. Merge the section; do not replace the entire settings file. For a bundle installed in `/Applications`:
-Direct OAuth reuses the providers’ CLI client configuration. Provider terms and undocumented endpoints can change. AI Usage reports endpoint failures and does not substitute estimated quota.
 
 ### Reset notifications
 

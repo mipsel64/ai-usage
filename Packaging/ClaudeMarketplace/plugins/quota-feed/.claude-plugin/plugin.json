@@ -1,9 +1,0 @@
-{
-  "name": "quota-feed",
-  "displayName": "AI Usage Quota Feed",
-  "version": "1.0.0",
-  "description": "Captures Claude subscription quota locally for AI Usage without credentials or network access.",
-  "author": {
-    "name": "AI Usage"
-  }
-}
