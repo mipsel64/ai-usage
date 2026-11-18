@@ -180,6 +180,26 @@ struct CredentialVaultTests {
         }
     }
 
+    @Test func temporaryCleanupKeepsNamesTheVaultDidNotCreate() async throws {
+        try await withVault { vault, directory, _ in
+            let foreignFile = directory.appendingPathComponent(".\(id.rawValue).backup.tmp")
+            let foreignDirectory = directory.appendingPathComponent(".\(id.rawValue).dir.tmp", isDirectory: true)
+            let stale = directory.appendingPathComponent(".\(id.rawValue).\(UUID().uuidString).tmp")
+            try write("foreign-content", to: foreignFile, mode: 0o600)
+            try FileManager.default.createDirectory(at: foreignDirectory, withIntermediateDirectories: true)
+            try write("stale-token", to: stale, mode: 0o600)
+
+            try vault.store("synthetic-token", for: id)
+            #expect(!FileManager.default.fileExists(atPath: stale.path))
+            try write("stale-token", to: stale, mode: 0o600)
+            try vault.remove(id)
+
+            #expect(!FileManager.default.fileExists(atPath: stale.path))
+            #expect(try String(contentsOf: foreignFile, encoding: .utf8) == "foreign-content")
+            #expect(FileManager.default.fileExists(atPath: foreignDirectory.path))
+        }
+    }
+
     @Test func oversizedValueIsRefusedBeforeTheFileChanges() async throws {
         try await withVault { vault, _, _ in
             try vault.store("old-token", for: id)

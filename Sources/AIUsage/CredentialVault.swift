@@ -107,7 +107,7 @@ final class CredentialVault: CredentialVaulting, @unchecked Sendable {
         return id.rawValue
     }
 
-    /// Deletes the temporary files of one provider that an interrupted store left. Call with `lock` held.
+    /// Deletes the temporary files `.<name>.<UUID>.tmp` that an interrupted store of one provider left. Call with `lock` held.
     private static func removeTemporaryFiles(of name: String, in directory: Int32) throws {
         let listing = dup(directory)
         guard listing >= 0 else { throw VaultError.inaccessible }
@@ -119,10 +119,18 @@ final class CredentialVault: CredentialVaulting, @unchecked Sendable {
         rewinddir(stream)
         let prefix = ".\(name).", suffix = ".tmp"
         var stale: [String] = []
-        while let entry = readdir(stream) {
+        while true {
+            // readdir returns nil both at the end and on an error; only errno tells them apart.
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw VaultError.inaccessible }
+                break
+            }
             let length = Int(entry.pointee.d_namlen)
             let entryName = withUnsafeBytes(of: entry.pointee.d_name) { String(decoding: $0.prefix(length), as: UTF8.self) }
-            if entryName.hasPrefix(prefix), entryName.hasSuffix(suffix) { stale.append(entryName) }
+            guard entryName.count > prefix.count + suffix.count, entryName.hasPrefix(prefix), entryName.hasSuffix(suffix),
+                  UUID(uuidString: String(entryName.dropFirst(prefix.count).dropLast(suffix.count))) != nil else { continue }
+            stale.append(entryName)
         }
         for entry in stale {
             guard unlinkat(directory, entry, 0) == 0 || errno == ENOENT else { throw VaultError.inaccessible }
