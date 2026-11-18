@@ -167,7 +167,7 @@ private enum OAuthRequest {
         request.httpMethod = "POST"
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpShouldHandleCookies = false
-        request.timeoutInterval = 15
+        request.timeoutInterval = SubscriptionOAuthTokens.requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         return request
@@ -249,10 +249,12 @@ private func decodeToken(
     }
 }
 
-/// The codes that the official Codex client and the OpenAI documentation treat as a spent or revoked sign-in.
+/// Codes that a new attempt cannot correct: a spent or revoked sign-in (official Codex client and OpenAI documentation)
+/// and a rejected client or grant (RFC 6749 section 5.2).
 private let permanentTokenErrors: Set<String> = [
     "invalid_grant", "invalid_refresh_token", "token_expired",
     "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused",
+    "invalid_client", "unauthorized_client", "unsupported_grant_type", "invalid_scope",
 ]
 
 private func checkTokenStatus(_ status: Int?, body: Data) throws {
@@ -611,6 +613,17 @@ public enum KimiOAuth {
 }
 
 public enum SubscriptionOAuthTokens {
+    /// A refresh that times out after the server rotated the refresh token loses the new token, so token requests wait longer than quota reads.
+    public static let requestTimeout: TimeInterval = 30
+
+    /// The quota-read transport with the same protections, and only the timeouts changed for token requests.
+    public static func defaultTransport() -> any RemoteUsageTransport {
+        let configuration = RemoteUsage.makeConfiguration()
+        configuration.timeoutIntervalForRequest = requestTimeout
+        configuration.timeoutIntervalForResource = requestTimeout
+        return URLSessionRemoteUsageTransport(configuration: configuration)
+    }
+
     public static func refresh(
         _ tokens: OAuthTokens,
         provider: ProviderID,

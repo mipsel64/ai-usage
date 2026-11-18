@@ -199,6 +199,10 @@ struct SubscriptionOAuthTests {
             (400, #"{"error":{"message":"private detail","type":"invalid_request_error","code":"refresh_token_reused"}}"#, .unauthorized),
             (400, #"{"code":"refresh_token_expired"}"#, .unauthorized),
             (400, #"{"error":"invalid_grant"}"#, .unauthorized),
+            (400, #"{"error":"invalid_client"}"#, .unauthorized),
+            (400, #"{"error":"unauthorized_client"}"#, .unauthorized),
+            (400, #"{"error":"unsupported_grant_type"}"#, .unauthorized),
+            (400, #"{"error":"invalid_scope"}"#, .unauthorized),
             (401, "", .unauthorized),
             (403, "", .unauthorized),
             (400, #"{"error":"invalid_request"}"#, .unavailable),
@@ -212,6 +216,16 @@ struct SubscriptionOAuthTests {
                 _ = try await CodexOAuth.refresh(refreshToken: "refresh", transport: transport, now: now)
             }
         }
+    }
+
+    @Test func tokenRequestsAreNotCutShortByTheTransport() async throws {
+        let transport = try #require(SubscriptionOAuthTokens.defaultTransport() as? URLSessionRemoteUsageTransport)
+        let scripted = ScriptedOAuthTransport(responses: [.init(statusCode: 503, body: Data())])
+        _ = try? await KimiOAuth.refresh(refreshToken: "refresh", transport: scripted, now: now)
+        let request = await scripted.onlyRequest()
+        #expect(request.timeoutInterval == SubscriptionOAuthTokens.requestTimeout)
+        #expect(transport.configuration.timeoutIntervalForResource >= request.timeoutInterval)
+        #expect(transport.configuration.timeoutIntervalForRequest >= request.timeoutInterval)
     }
 
     @Test func kimiDeviceAuthorizationValidatesBrowserURLsAndDefaults() async throws {
