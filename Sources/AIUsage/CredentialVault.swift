@@ -180,9 +180,9 @@ final class CredentialVault: CredentialVaulting, @unchecked Sendable {
             guard Self.flush(descriptor) else { throw VaultError.inaccessible }
             try handle.close()
             // renameat replaces a symlink at the target instead of following it.
-            guard renameat(directory, temporary, directory, name) == 0, Self.flush(directory) else {
-                throw VaultError.inaccessible
-            }
+            guard renameat(directory, temporary, directory, name) == 0 else { throw VaultError.inaccessible }
+            // Best effort: the file already holds the new value, and some volumes cannot flush a directory.
+            _ = Self.flush(directory)
         } catch {
             unlinkat(directory, temporary, 0)
             throw VaultError.inaccessible
