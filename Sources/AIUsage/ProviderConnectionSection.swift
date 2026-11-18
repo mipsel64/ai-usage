@@ -15,11 +15,11 @@ struct ProviderConnectionSection: View {
     let actions: ProviderConnectionActions
 
     private var lastQuotaReading: String? {
-        guard state?.connected == true, state?.needsAuthentication != true else { return nil }
-        if let date = state?.snapshot?.observedAt {
+        guard let state, state.connected else { return nil }
+        if let date = state.snapshot?.observedAt {
             return date.formatted(date: .abbreviated, time: .shortened)
         }
-        return "Waiting for quota"
+        return state.needsAuthentication ? nil : "Waiting for quota"
     }
 
     var body: some View {
