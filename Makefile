@@ -5,6 +5,7 @@ SIGN_IDENTITY ?= -
 APP := .build/AI Usage.app
 
 .PHONY: app run test
+# SwiftPM's default build system records the deployment target as the SDK version, so AppKit keeps the pre-26 design; vtool restores the real SDK.
 app:
 	swift build -c $(CONFIG)
 	@set -eu; bin="$$(swift build -c $(CONFIG) --show-bin-path)"; \
@@ -13,6 +14,7 @@ app:
 	install -m 644 Packaging/Info.plist "$(APP)/Contents/Info.plist"; \
 	install -m 644 Packaging/AppIcon.icns "$(APP)/Contents/Resources/AppIcon.icns"; \
 	install -m 755 "$$bin/AIUsage" "$(APP)/Contents/MacOS/AIUsage"; \
+	xcrun vtool -set-build-version macos "$$(plutil -extract LSMinimumSystemVersion raw Packaging/Info.plist)" "$$(xcrun --sdk macosx --show-sdk-version)" -replace -output "$(APP)/Contents/MacOS/AIUsage" "$(APP)/Contents/MacOS/AIUsage"; \
 	codesign --force --options runtime --sign "$(SIGN_IDENTITY)" "$(APP)"
 
 run: app
