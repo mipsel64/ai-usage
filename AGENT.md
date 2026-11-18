@@ -25,4 +25,4 @@ A quota refresh reads data. A quota reset changes an account. Keep those actions
 
 For independent provider changes, use subagents with separate file ownership. Agree on the contract first. Apply the matching ECC skill to each task: `agentic-engineering`, `swiftui-patterns`, `swift-protocol-di-testing`, `security-review`, or `verification-loop`. Use a fresh reviewer for changes to credentials or reset commands. For a GLM-5.3 security consultation, select `zai/glm-5.3` with `max` thinking. Send the design only; do not send credentials or local account data. Report the actual model and result.
 
-Run `swift test` and `make run`. Check the packaged menu with all providers disconnected before connecting a test account. Verify a new adapter with synthetic data first. Report exactly which live paths you checked. Do not claim a live quota reset from a fixture or a local cache update.
+Run `make test` and `make run`. Check the packaged menu with all providers disconnected before connecting a test account. Verify a new adapter with synthetic data first. Report exactly which live paths you checked. Do not claim a live quota reset from a fixture or a local cache update.
