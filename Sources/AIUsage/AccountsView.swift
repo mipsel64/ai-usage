@@ -9,6 +9,7 @@ private let paneTitleLeadingInset: CGFloat = 20
 @MainActor
 struct AccountsView: View {
     let store: UsageStore
+    @Environment(\.controlActiveState) private var controlActiveState
 
     @ViewState private var selection: AccountSelection?
     @ViewState private var secrets: [ProviderID: String] = [:]
@@ -63,6 +64,7 @@ struct AccountsView: View {
         GeometryReader { proxy in
             Text(selectedTitle)
                 .font(.title2.bold())
+                .foregroundStyle(controlActiveState == .inactive ? .secondary : .primary)
                 .frame(height: proxy.safeAreaInsets.top)
                 .padding(.leading, paneTitleLeadingInset)
                 .offset(y: -proxy.safeAreaInsets.top)
