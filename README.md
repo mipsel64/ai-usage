@@ -51,7 +51,7 @@ A missing row means that the provider did not report a date, or that the date ha
 
 ### Notifications
 
-The initial reading establishes a baseline. A fresh observation can show that a window advanced past its previous deadline, that quota returned to full, or that the reported number of banked reset credits increased. AI Usage sends one local notification per provider observation. A ticking countdown, failed request, or visit to a reset page does not produce a reset alert. A notification cannot identify changes that occur and disappear between observations. No background service runs after you quit.
+The initial reading establishes a baseline. A fresh observation can show that a window advanced past its previous deadline, that quota returned to full, or that the reported number of banked reset credits increased. A window that had more than 80% left in the previous reading does not produce a refresh alert, because you barely used it. AI Usage sends one local notification per provider observation. The notification title is the provider name, and the body names each refreshed window, for example "Weekly limit refreshed.". A ticking countdown, failed request, or visit to a reset page does not produce a reset alert. A notification cannot identify changes that occur and disappear between observations. No background service runs after you quit.
 
 Low-quota alerts name each window that goes below 20% or 10% remaining, once per downward crossing. The first reading after you connect is the baseline, and after a relaunch the reading saved before the app quit is the baseline. A window that rises above a threshold and falls below it again alerts again.
 

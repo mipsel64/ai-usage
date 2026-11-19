@@ -214,11 +214,11 @@ final class UsageStore {
             states[id]?.needsAuthentication = false
             defaults.set(try JSONEncoder().encode(reading), forKey: "snapshot.\(id.rawValue)")
             if notificationsEnabled, let last = state.snapshot, reading.observedAt > last.observedAt {
-                let reset = !reading.refreshedWindows(since: last).isEmpty
+                let refreshed = reading.refreshedWindows(since: last)
                 let credit = last.resetCredits.flatMap { before in reading.resetCredits.map { $0.availableCount > before.availableCount } } ?? false
                 let low = reading.lowWindows(since: last)
-                if reset || credit || !low.isEmpty {
-                    await postNotification(provider: provider, generation: generation, body: Self.notificationBody(reset: reset, credit: credit, low: low))
+                if !refreshed.isEmpty || credit || !low.isEmpty {
+                    await postNotification(provider: provider, generation: generation, body: Self.notificationBody(refreshed: refreshed, credit: credit, low: low))
                 }
             }
             startAccountRead(for: provider, access: readingAccess, generation: generation)
@@ -297,11 +297,9 @@ final class UsageStore {
         }
     }
 
-    static func notificationBody(reset: Bool, credit: Bool, low: [(window: QuotaWindow, threshold: Int)]) -> String {
-        var lines: [String] = []
-        if reset && credit { lines.append("Quota refreshed. A new reset credit is available.") }
-        else if reset { lines.append("Quota refreshed.") }
-        else if credit { lines.append("A new reset credit is available.") }
+    static func notificationBody(refreshed: [QuotaWindow], credit: Bool, low: [(window: QuotaWindow, threshold: Int)]) -> String {
+        var lines = refreshed.map { "\($0.title) limit refreshed." }
+        if credit { lines.append("A new reset credit is available.") }
         lines += low.map { "\($0.window.title) limit is below \($0.threshold)%." }
         return lines.joined(separator: "\n")
     }
