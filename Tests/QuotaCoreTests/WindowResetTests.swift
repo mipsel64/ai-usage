@@ -37,4 +37,13 @@ struct WindowResetTests {
         #expect(newPeriod.refreshedWindows(since: sample(10, 80.5, 50)).isEmpty)
         #expect(newPeriod.refreshedWindows(since: sample(10, 80, 50)) == newPeriod.windows)
     }
+
+    @Test func appliesThe80PercentRuleToEachWindowOnItsOwn() {
+        func window(_ id: String, _ percent: Double, _ deadline: Double) -> QuotaWindow {
+            .init(id: id, title: id, remainingPercent: percent, resetAt: Date(timeIntervalSince1970: deadline))
+        }
+        let old = QuotaSnapshot(windows: [window("5h", 99, 50), window("weekly", 30, 50)], observedAt: Date(timeIntervalSince1970: 10))
+        let next = QuotaSnapshot(windows: [window("5h", 95, 100), window("weekly", 95, 100)], observedAt: Date(timeIntervalSince1970: 55))
+        #expect(next.refreshedWindows(since: old).map(\.id) == ["weekly"])
+    }
 }
