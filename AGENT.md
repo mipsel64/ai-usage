@@ -26,3 +26,7 @@ A quota refresh reads data. A quota reset changes an account. Keep those actions
 For independent provider changes, use subagents with separate file ownership. Agree on the contract first. Apply the matching ECC skill to each task: `agentic-engineering`, `swiftui-patterns`, `swift-protocol-di-testing`, `security-review`, or `verification-loop`. Use a fresh reviewer for changes to credentials or reset commands. For a GLM-5.3 security consultation, select `zai/glm-5.3` with `max` thinking. Send the design only; do not send credentials or local account data. Report the actual model and result.
 
 Run `make test` and `make run`. Check the packaged menu with all providers disconnected before connecting a test account. Verify a new adapter with synthetic data first. Report exactly which live paths you checked. Do not claim a live quota reset from a fixture or a local cache update.
+
+## Release
+
+The version lives in `Packaging/Info.plist`. Keep `CFBundleShortVersionString` and `CFBundleVersion` equal. A tag `vX.Y.Z` (or `vX.Y.Z-rc.N` for a pre-release) on `main` starts `.github/workflows/release.yml`. The workflow fails if the tag does not match the version. It publishes the ad hoc signed, not notarized DMG and its SHA-256 file to GitHub Releases. Only the owner pushes tags. `make dmg` builds the same DMG locally.
