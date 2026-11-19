@@ -12,12 +12,13 @@ AI Usage needs macOS 14.4 or later on a Mac with Apple silicon.
 2. Optionally, check the download: in the download folder, run `shasum -a 256 -c AI-Usage-<version>-arm64.dmg.sha256`. The result must be `OK`.
 3. Open the DMG and drag **AI Usage** to **Applications**.
 
-The release is ad hoc signed and is not notarized by Apple, so macOS blocks the first open. To open it the first time:
+The release is ad hoc signed and is not notarized by Apple, so macOS blocks the first open. The warning can say that AI Usage is damaged and that you should move it to the Trash. The app is not damaged: macOS shows this text for a download that Apple did not notarize. Do not move the app to the Trash. To open it the first time:
 
-- macOS 15 or later: open AI Usage once and click **Done** in the warning. Then choose Apple menu > **System Settings** > **Privacy & Security**, scroll to **Security**, click **Open Anyway** for AI Usage, and confirm with your login password.
+- macOS 15 or later: open AI Usage once and close the warning. Then choose Apple menu > **System Settings** > **Privacy & Security**, scroll to **Security**, click **Open Anyway** for AI Usage, and confirm with Touch ID or your login password.
+- If **Open Anyway** does not show: after the check in step 2 gives `OK`, run `xattr -dr com.apple.quarantine "/Applications/AI Usage.app"` in Terminal, then open the app. This removes the download mark from this app only.
 - macOS 14: in Finder, Control-click AI Usage in Applications, choose **Open**, then click **Open** in the dialog.
 
-After this, the app opens normally. See Apple's [Safely open apps on your Mac](https://support.apple.com/en-us/102445).
+After this, the app opens normally. You do this one time for each version that you download. An app that you build from source with `make run` has no download mark and shows no warning. See Apple's [Safely open apps on your Mac](https://support.apple.com/en-us/102445).
 
 ## Run
 
