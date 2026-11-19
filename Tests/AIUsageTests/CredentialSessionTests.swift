@@ -208,13 +208,96 @@ struct CredentialSessionTests {
         #expect(store.states[id]?.needsAuthentication == true)
     }
 
-    @Test func failedForcedRenewalsAlsoPauseForTheLeadTime() async throws {
+    @Test func temporaryFailureOfAForcedRenewalStartsNoPause() async throws {
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
+        let renewed = tokens("renewed", expiresAt: clock.now.addingTimeInterval(10_800))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: renewed)
+        driver.refreshError = OAuthError.unavailable
+        let session = try session(initial, driver: driver, clock: clock)
+        let read = { (access: ProviderAccess) async throws -> String in
+            guard try access.oauthTokens() == renewed else { throw QuotaError.unauthorized }
+            return "read"
+        }
+
+        let first = try await session.access(for: provider(), interactive: false)
+        await #expect(throws: ActionError.self) { try await session.withRenewal(first, for: id, read) }
+        #expect(driver.refreshCalls == 1)
+
+        driver.refreshError = nil
+        clock.now = clock.now.addingTimeInterval(60)
+        let second = try await session.access(for: provider(), interactive: false)
+        let result = try await session.withRenewal(second, for: id, read)
+        #expect(driver.refreshCalls == 2)
+        #expect(result.value == "read")
+        #expect(try result.access.oauthTokens() == renewed)
+    }
+
+    @Test func failedForcedRenewalOfAnOldConnectionKeepsThePauseOfTheNewOne() async throws {
+        let clock = OAuthClock(now: Date())
+        let old = tokens("old", expiresAt: clock.now.addingTimeInterval(3600))
+        let replacement = tokens("replacement", expiresAt: clock.now.addingTimeInterval(3600))
+        let renewed = tokens("renewed", expiresAt: clock.now.addingTimeInterval(10_800))
+        let driver = StubOAuthDriver(loginTokens: old, refreshedTokens: renewed)
+        let session = try session(old, driver: driver, clock: clock)
+        let rejectAll = { (_: ProviderAccess) async throws -> Void in throw QuotaError.unauthorized }
+        let (started, release) = hold(driver)
+        let oldAccess = try await session.access(for: provider(), interactive: false)
+        let oldCall = Task { try await session.withRenewal(oldAccess, for: id, rejectAll) }
+        for await _ in started {}
+
+        try session.connect(.oauth(replacement), for: id)
+        driver.beforeRefresh = nil
+        // The new connection gets fresh tokens that the provider rejects again, which starts its pause.
+        let newAccess = try await session.access(for: provider(), interactive: false)
+        await #expect(throws: QuotaError.unauthorized) { try await session.withRenewal(newAccess, for: id, rejectAll) }
+        #expect(driver.refreshCalls == 2)
+
+        driver.refreshError = OAuthError.unavailable
+        release.finish()
+        await #expect(throws: QuotaError.unavailable) { try await oldCall.value }
+
+        let pausedAccess = try await session.access(for: provider(), interactive: false)
+        await #expect(throws: QuotaError.unauthorized) { try await session.withRenewal(pausedAccess, for: id, rejectAll) }
+        #expect(driver.refreshCalls == 2)
+    }
+
+    @Test func temporaryForcedRenewalFailureKeepsTheProviderActive() async throws {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
         let clock = OAuthClock(now: Date())
         let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
         let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: initial)
+        let reads = QuotaReadCounter()
+        let store = UsageStore(
+            providers: [provider { try await reads.record() }], defaults: defaults, vault: MemoryCredentialVault(),
+            oauth: driver, now: { clock.now }
+        )
+        try await store.connect(id)
+        await store.refresh(id)
+        #expect(store.states[id]?.snapshot != nil)
+        await reads.rejectReads()
         driver.refreshError = OAuthError.unavailable
+
+        for _ in 0..<2 {
+            clock.now = clock.now.addingTimeInterval(60)
+            await store.refresh(id)
+        }
+
+        #expect(driver.refreshCalls == 2)
+        #expect(store.activeProviders.map(\.id) == [id])
+        #expect(!store.needsSignIn)
+        #expect(store.states[id]?.snapshot != nil)
+        #expect(store.states[id]?.message == CredentialSession.renewalFailure)
+    }
+
+    @Test func refusedForcedRenewalStopsAutomaticAttempts() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = OAuthClock(now: Date())
+        let initial = tokens("initial", expiresAt: clock.now.addingTimeInterval(3600))
+        let driver = StubOAuthDriver(loginTokens: initial, refreshedTokens: initial)
+        driver.refreshError = OAuthError.unauthorized
         let reads = QuotaReadCounter()
         let store = UsageStore(
             providers: [provider { try await reads.record() }], defaults: defaults, vault: MemoryCredentialVault(),
@@ -223,11 +306,10 @@ struct CredentialSessionTests {
         try await store.connect(id)
         await reads.rejectReads()
 
-        for _ in 0..<3 {
-            await store.refresh(id)
-            clock.now = clock.now.addingTimeInterval(60)
-        }
-
+        await store.refresh(id)
+        #expect(store.states[id]?.needsAuthentication == true)
+        clock.now = clock.now.addingTimeInterval(OAuthTokens.refreshLeadTime + 60)
+        await store.refresh(id)
         #expect(driver.refreshCalls == 1)
         #expect(store.states[id]?.needsAuthentication == true)
     }

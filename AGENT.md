@@ -29,4 +29,4 @@ Run `make test` and `make run`. Check the packaged menu with all providers disco
 
 ## Release
 
-The version lives in `Packaging/Info.plist`. Keep `CFBundleShortVersionString` and `CFBundleVersion` equal. A tag `vX.Y.Z` (or `vX.Y.Z-rc.N` for a pre-release) on `main` starts `.github/workflows/release.yml`. The workflow fails if the tag does not match the version. It publishes the ad hoc signed, not notarized DMG and its SHA-256 file to GitHub Releases. Only the owner pushes tags. `make dmg` builds the same DMG locally.
+The version lives in `Packaging/Info.plist`. Keep `CFBundleShortVersionString` and `CFBundleVersion` equal. A tag `vX.Y.Z` (or `vX.Y.Z-rc.N` for a pre-release) on `main` starts `.github/workflows/release.yml`. The workflow fails if the tag does not match the version. It publishes the ad hoc signed, not notarized DMG and its SHA-256 file to GitHub Releases. Only the owner pushes tags. `make dmg` builds the same DMG locally. `make app` writes the short commit hash to the `AIUsageCommit` key of the built bundle, and About shows `<version>+<hash>`.
