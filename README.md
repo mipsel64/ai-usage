@@ -4,6 +4,21 @@
 
 AI Usage is a native macOS menu bar app for Claude Code, Codex, Z.ai GLM Coding Plan, and Kimi Code. Click the gauge to see the reported quota windows and the time until each reset. No account is connected on first launch.
 
+## Install
+
+AI Usage needs macOS 14.4 or later on a Mac with Apple silicon.
+
+1. Download `AI-Usage-<version>-arm64.dmg` and its `.sha256` file from the [latest release](https://github.com/mipsel64/ai-usage/releases/latest).
+2. Optionally, check the download: in the download folder, run `shasum -a 256 -c AI-Usage-<version>-arm64.dmg.sha256`. The result must be `OK`.
+3. Open the DMG and drag **AI Usage** to **Applications**.
+
+The release is ad hoc signed and is not notarized by Apple, so macOS blocks the first open. To open it the first time:
+
+- macOS 15 or later: open AI Usage once and click **Done** in the warning. Then choose Apple menu > **System Settings** > **Privacy & Security**, scroll to **Security**, click **Open Anyway** for AI Usage, and confirm with your login password.
+- macOS 14: in Finder, Control-click AI Usage in Applications, choose **Open**, then click **Open** in the dialog.
+
+After this, the app opens normally. See Apple's [Safely open apps on your Mac](https://support.apple.com/en-us/102445).
+
 ## Run
 
 Use macOS 14.4 or later with the Swift 6 toolchain. Optionally, run `bash Packaging/setup-development-signing.sh` once. It creates a local **AI Usage Development** code-signing certificate in the login Keychain, so that rebuilds keep the same signing identity, and writes the ignored `.local.mk` file. Without it, builds use an ad-hoc signature. Run `make run` to build, sign, and open `.build/AI Usage.app`. Use the app bundle, not `swift run`, for macOS notifications. You can copy the bundle to `/Applications`. Run `make test` for the offline test suite. CI uses Xcode 26.5 (17F42).
@@ -47,7 +62,7 @@ Some limits are outside the app. Claude ends a sign-in about 30 days after you s
 
 ### Security
 
-The default build is local, ad-hoc signed with the hardened runtime. It is not notarized or App Sandbox restricted. The Codex CLI uses its own sign-in and runs with your user permissions. The app verifies its OpenAI Developer ID signature before use. The app has no automatic updater. For distribution, use a Developer ID identity (`make app SIGN_IDENTITY='Developer ID Application: …'`) and notarize the bundle separately.
+The default build is local, ad-hoc signed with the hardened runtime. It is not notarized or App Sandbox restricted. The Codex CLI uses its own sign-in and runs with your user permissions. The app verifies its OpenAI Developer ID signature before use. The release DMG is built the same way: ad hoc signed with the hardened runtime and not notarized. The app has no automatic updater; to update, install the DMG of a newer release.
 Local builds use the stable self-signed **AI Usage Development** identity after `bash Packaging/setup-development-signing.sh`; without it, they use an ad-hoc signature. They use the hardened runtime and are not notarized or restricted by the App Sandbox. OAuth sign-in uses PKCE and state validation where supported. AI Usage keeps each credential in one file, `~/.config/aiusage/<provider id>`, with mode 0600. Each save writes a temporary file, flushes it to disk, and then renames it over the credential file. The app creates the directory with mode 0700, refuses it if it is a symlink or is not owned by your user, and resets group or other permissions on it to 0700. When the app creates the directory, it tries to exclude it from Time Machine backups and to add a `.gitignore` file that contains `*`, so that a `~/.config` kept in a dotfiles Git repository does not commit the credentials. Codex account IDs stay with the Codex tokens. Each process that runs as your macOS user can read these files without a dialog. The app refuses a credential file that is a symlink, is not a regular file, is not owned by your user, is readable by group or others, or is larger than 64 KiB. If you delete the file of an OAuth provider while the app runs, the app does not write it back (unless it still retries a failed save); it uses the tokens in memory until the next renewal, and then the card shows **Sign-in required**. A Z.ai key stays in memory until the app quits. A credential that an earlier version kept in the login Keychain moves to its file at the first read, and the app then deletes the Keychain item. If you connect or disconnect while that move waits for a Keychain dialog, the move does not overwrite the newer state. If macOS refuses that read in the background, the provider card asks you to refresh that provider from the menu; this can show one Keychain dialog. Automatic checks read the Keychain only when a credential file is missing, so after the move they do not read it again; the app asks macOS not to show a dialog for that read, but macOS can still show one for a build whose code signature changed. The app uses fixed first-party HTTPS endpoints, denies redirects, and does not collect analytics. Disconnect first deletes the old Keychain item and then the credential file; if the Keychain delete fails, the disconnect fails with a message and nothing changes. Disconnect does not revoke the provider’s OAuth grant or subscription key. Use the provider console to revoke access. Preferences contain connection choices and the last normalized quota observation, not tokens or raw responses. Account details stay in memory for the current session only; Z.ai reports them only at sign-in, so after a relaunch its details show again only after a reconnect, and disconnect removes them. The app has no automatic updater.
 
 [AGENT.md](AGENT.md) describes how to register a new `QuotaProvider` without changing the menu, polling, or notifications. Adapters are compiled into the app; it does not load external plug-ins.

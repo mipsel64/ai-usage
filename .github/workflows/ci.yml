@@ -28,8 +28,9 @@ jobs:
         run: test "$(xcodebuild -version | tail -1)" = 'Build version 17F42'
       - name: Test providers and reset handling
         run: swift test --disable-xctest
-      - name: Build and verify the app bundle
+      - name: Build and verify the app bundle and disk image
         run: |
-          make app
+          make dmg
           plutil -lint '.build/AI Usage.app/Contents/Info.plist'
           codesign --verify --deep --strict '.build/AI Usage.app'
+          hdiutil verify .build/AI-Usage-*.dmg
