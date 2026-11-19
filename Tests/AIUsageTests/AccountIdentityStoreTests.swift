@@ -341,6 +341,87 @@ struct AccountIdentityStoreTests {
         #expect(store.accountReadTask(for: id) == nil)
     }
 
+    @Test func accountIsReadAgainAfterItsPeriodEndsLessOftenAsItAges() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = AccountClock(Date())
+        let periodEnd = clock.now.addingTimeInterval(86_400)
+        let renewed = periodEnd.addingTimeInterval(30 * 86_400)
+        let reads = AccountReadCounter()
+        let provider = makeProvider { _ in
+            let count = await reads.record()
+            // Reads 2 to 4 still report the old period, as a token that is not yet renewed does.
+            return count < 5
+                ? AccountIdentity(email: count == 1 ? "user@example.com" : nil, periodEnd: periodEnd)
+                : AccountIdentity(periodEnd: renewed)
+        }
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: AccountMemoryVault(), now: { clock.now })
+        try await store.connect(id, secret: "synthetic-secret")
+        await waitForAccountRead(store)
+
+        clock.now = periodEnd.addingTimeInterval(-60)
+        await store.refresh(id)
+        #expect(await reads.count == 1)
+
+        clock.now = periodEnd.addingTimeInterval(60)
+        await store.refresh(id)
+        await waitForAccountRead(store)
+        #expect(await reads.count == 2)
+        #expect(store.states[id]?.account == AccountIdentity(email: "user@example.com", periodEnd: periodEnd))
+
+        clock.now = periodEnd.addingTimeInterval(60 + 3_599)
+        await store.refresh(id)
+        #expect(await reads.count == 2)
+
+        clock.now = periodEnd.addingTimeInterval(60 + 3_600)
+        await store.refresh(id)
+        await waitForAccountRead(store)
+        #expect(await reads.count == 3)
+
+        clock.now = periodEnd.addingTimeInterval(6 * 3_600)
+        await store.refresh(id)
+        await waitForAccountRead(store)
+        #expect(await reads.count == 4)
+
+        // Eight hours after the date, reads are at least two hours apart.
+        clock.now = periodEnd.addingTimeInterval(7 * 3_600)
+        await store.refresh(id)
+        #expect(await reads.count == 4)
+
+        clock.now = periodEnd.addingTimeInterval(8 * 3_600)
+        await store.refresh(id)
+        await waitForAccountRead(store)
+        #expect(await reads.count == 5)
+        #expect(store.states[id]?.account == AccountIdentity(email: "user@example.com", periodEnd: renewed))
+
+        clock.now = clock.now.addingTimeInterval(7_200)
+        await store.refresh(id)
+        #expect(await reads.count == 5)
+    }
+
+    @Test func browserSignInIdentityGainsThePeriodFromTheAccountRead() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let periodEnd = Date().addingTimeInterval(86_400)
+        let provider = QuotaProvider(
+            id: id, displayName: "Browser", accountURL: url, connection: .browserLogin,
+            reset: .automaticOnly, readAccount: { _ in AccountIdentity(periodEnd: periodEnd, renews: true) }
+        ) { _ in snapshot }
+        let login = AccountBrowserLogin(key: "synthetic-key", account: identity)
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: AccountMemoryVault(), browserLogin: login)
+        try await store.connect(id)
+        await waitForAccountRead(store)
+        #expect(store.states[id]?.account == AccountIdentity(
+            email: "user@example.com", name: "Alice", periodEnd: periodEnd, renews: true
+        ))
+    }
+
+    @Test func periodTitleFollowsTheReportedRenewal() {
+        #expect(AccountIdentitySection.periodTitle(renews: true) == "Renews")
+        #expect(AccountIdentitySection.periodTitle(renews: false) == "Ends")
+        #expect(AccountIdentitySection.periodTitle(renews: nil) == "Current period ends")
+    }
+
     private func waitForAccountRead(_ store: UsageStore) async {
         await store.accountReadTask(for: id)?.value
     }
@@ -362,7 +443,15 @@ struct AccountIdentityStoreTests {
 
 private actor AccountReadCounter {
     private(set) var count = 0
-    func record() { count += 1 }
+    @discardableResult func record() -> Int {
+        count += 1
+        return count
+    }
+}
+
+private final class AccountClock: @unchecked Sendable {
+    var now: Date
+    init(_ now: Date) { self.now = now }
 }
 
 @MainActor

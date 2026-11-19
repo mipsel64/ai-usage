@@ -6,18 +6,13 @@ struct ProviderCardHeader: View {
     let provider: QuotaProvider
     let state: ProviderState?
     let now: Date
-    let isConnecting: Bool
     let canRedeem: Bool
-    let onConnect: () -> Void
     let onRefresh: () -> Void
-    let onShowAccounts: () -> Void
+    let onShowPreferences: () -> Void
     let onRedeem: () -> Void
 
-    private var isConnected: Bool { state?.connected == true }
-    private var needsAuthentication: Bool { state?.needsAuthentication == true }
     private var hasConnectedStatus: Bool {
-        guard isConnected, !needsAuthentication, state?.message?.isEmpty != false,
-              let snapshot = state?.snapshot else { return false }
+        guard state?.message?.isEmpty != false, let snapshot = state?.snapshot else { return false }
         return now.timeIntervalSince(snapshot.observedAt) < 5 * 60
     }
 
@@ -33,44 +28,21 @@ struct ProviderCardHeader: View {
             }
             ProviderStatusLabel(state: state, now: now)
             Spacer(minLength: 4)
-            trailingControl
+            if state?.loading == true {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 24, height: 24)
+                    .accessibilityLabel("\(provider.displayName) activity in progress")
+            }
+            ProviderActionsMenu(
+                provider: provider,
+                canRefresh: state?.loading != true,
+                canRedeem: canRedeem,
+                onRefresh: onRefresh,
+                onShowPreferences: onShowPreferences,
+                onRedeem: onRedeem
+            )
         }
         .frame(minHeight: 24)
-    }
-
-    private var activityIndicator: some View {
-        ProgressView()
-            .controlSize(.mini)
-            .frame(width: 24, height: 24)
-            .accessibilityLabel("\(provider.displayName) activity in progress")
-    }
-
-    @ViewBuilder
-    private var trailingControl: some View {
-        if isConnecting {
-            activityIndicator
-        } else if needsAuthentication {
-            Button("Sign In", action: onConnect)
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.capsule)
-                .controlSize(.small)
-                .accessibilityLabel("Sign in to \(provider.displayName)")
-        } else if !isConnected {
-            Button("Connect", action: onConnect)
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
-                .controlSize(.small)
-                .accessibilityLabel("Connect \(provider.displayName)")
-        } else if state?.loading == true {
-            activityIndicator
-        }
-        ProviderActionsMenu(
-            provider: provider,
-            canRefresh: !isConnecting && isConnected && !needsAuthentication && state?.loading != true,
-            canRedeem: !isConnecting && canRedeem,
-            onRefresh: onRefresh,
-            onShowAccounts: onShowAccounts,
-            onRedeem: onRedeem
-        )
     }
 }

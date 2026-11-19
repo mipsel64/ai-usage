@@ -1,6 +1,8 @@
 import QuotaCore
 
-enum AccountSelection: Hashable {
+enum PreferencesSelection: Hashable {
     case provider(ProviderID)
+    case general
     case notifications
+    case about
 }

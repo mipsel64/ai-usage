@@ -6,20 +6,16 @@ struct ProviderCard: View {
     let provider: QuotaProvider
     let state: ProviderState?
     let now: Date
-    let isConnecting: Bool
     let canRedeem: Bool
     let resetResult: String?
     let resetError: String?
-    let connectionError: String?
-    let onConnect: () -> Void
     let onRefresh: () -> Void
-    let onShowAccounts: () -> Void
+    let onShowPreferences: () -> Void
     let onRedeem: () -> Void
 
     private var hasBody: Bool {
-        guard state?.connected == true || connectionError?.isEmpty == false else { return false }
-        return state?.snapshot != nil || state?.message?.isEmpty == false ||
-            resetResult?.isEmpty == false || resetError?.isEmpty == false || connectionError?.isEmpty == false
+        state?.snapshot != nil || state?.message?.isEmpty == false ||
+            resetResult?.isEmpty == false || resetError?.isEmpty == false
     }
 
     var body: some View {
@@ -28,11 +24,9 @@ struct ProviderCard: View {
                 provider: provider,
                 state: state,
                 now: now,
-                isConnecting: isConnecting,
                 canRedeem: canRedeem,
-                onConnect: onConnect,
                 onRefresh: onRefresh,
-                onShowAccounts: onShowAccounts,
+                onShowPreferences: onShowPreferences,
                 onRedeem: onRedeem
             )
             if hasBody {
@@ -41,8 +35,7 @@ struct ProviderCard: View {
                     state: state,
                     now: now,
                     resetResult: resetResult,
-                    resetError: resetError,
-                    connectionError: connectionError
+                    resetError: resetError
                 )
             }
         }
