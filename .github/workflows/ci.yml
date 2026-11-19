@@ -36,4 +36,5 @@ jobs:
           make dmg
           plutil -lint '.build/AI Usage.app/Contents/Info.plist'
           codesign --verify --deep --strict '.build/AI Usage.app'
+          test "$(plutil -extract AIUsageCommit raw '.build/AI Usage.app/Contents/Info.plist')" = "$(git rev-parse --short=7 HEAD)"
           hdiutil verify .build/AI-Usage-*.dmg

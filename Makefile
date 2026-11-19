@@ -14,6 +14,7 @@ app:
 	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"; \
 	rsync -a --delete Packaging/ProviderIcons/ "$(APP)/Contents/Resources/ProviderIcons/"; \
 	install -m 644 Packaging/Info.plist "$(APP)/Contents/Info.plist"; \
+	if commit="$$(git rev-parse --short=7 HEAD 2>/dev/null)"; then plutil -replace AIUsageCommit -string "$$commit" "$(APP)/Contents/Info.plist"; fi; \
 	install -m 644 Packaging/AppIcon.icns "$(APP)/Contents/Resources/AppIcon.icns"; \
 	install -m 755 "$$bin/AIUsage" "$(APP)/Contents/MacOS/AIUsage"; \
 	xcrun vtool -set-build-version macos "$$(plutil -extract LSMinimumSystemVersion raw Packaging/Info.plist)" "$$(xcrun --sdk macosx --show-sdk-version)" -replace -output "$(APP)/Contents/MacOS/AIUsage" "$(APP)/Contents/MacOS/AIUsage"; \
