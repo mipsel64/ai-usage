@@ -153,6 +153,41 @@ struct ProviderLifecycleTests {
         #expect(store.states[id]?.message?.contains("secret") == false)
     }
 
+    @Test func menuListsOnlyConnectedProvidersThatNeedNoSignIn() {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func provider(_ raw: String, _ connection: ProviderConnection) -> QuotaProvider {
+            QuotaProvider(id: ProviderID(rawValue: raw), displayName: raw, accountURL: account,
+                          connection: connection, reset: .automaticOnly) { _ in throw QuotaError.unavailable }
+        }
+        let active = provider("active", .apiKey)
+        // An OAuth connection without the current OAuth version needs a new sign-in.
+        let signIn = provider("sign-in", .oauth)
+        let disconnected = provider("disconnected", .apiKey)
+        defaults.set(true, forKey: "connected.active")
+        defaults.set(true, forKey: "connected.sign-in")
+        let store = UsageStore(providers: [active, signIn, disconnected], defaults: defaults, vault: RecordingCredentialVault())
+        #expect(store.states[signIn.id]?.needsAuthentication == true)
+        #expect(store.activeProviders.map(\.id) == [active.id])
+        #expect(store.needsSignIn)
+    }
+
+    @Test func restoredBrowserLoginWithoutCredentialNeedsSignIn() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let snapshot = QuotaSnapshot(windows: [.init(id: "week", title: "Weekly", remainingPercent: 60, resetAt: nil)], observedAt: .now)
+        let provider = QuotaProvider(id: id, displayName: "Browser", accountURL: account,
+                                     connection: .browserLogin, reset: .automaticOnly) { _ in snapshot }
+        defaults.set(true, forKey: "connected.\(id.rawValue)")
+        defaults.set(try JSONEncoder().encode(snapshot), forKey: "snapshot.\(id.rawValue)")
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+        #expect(store.activeProviders.map(\.id) == [id])
+        await store.refresh(id)
+        #expect(store.activeProviders.isEmpty)
+        #expect(store.needsSignIn)
+        #expect(store.states[id]?.message == QuotaError.notConfigured.localizedDescription)
+    }
+
     private func preferences() -> (UserDefaults, String) {
         let suite = "AIUsage.Tests.\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)

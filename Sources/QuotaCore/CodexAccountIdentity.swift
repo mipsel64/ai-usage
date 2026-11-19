@@ -11,7 +11,8 @@ enum CodexAccountIdentity {
             email: primary.email ?? fallback.email,
             name: primary.name ?? fallback.name,
             plan: primary.plan ?? fallback.plan,
-            organization: primary.organization ?? fallback.organization
+            organization: primary.organization ?? fallback.organization,
+            periodEnd: primary.periodEnd ?? fallback.periodEnd
         ).sanitized()
     }
 
@@ -28,7 +29,9 @@ enum CodexAccountIdentity {
                 ?? AccountIdentity.sanitizedEmail(profile?["email"] as? String),
             name: claims["name"] as? String,
             plan: auth?["chatgpt_plan_type"] as? String,
-            organization: organization?["title"] as? String
+            organization: organization?["title"] as? String,
+            // Paid-until snapshot; it changes only when the token is renewed.
+            periodEnd: (auth?["chatgpt_subscription_active_until"] as? String).flatMap(RemoteUsage.parseRFC3339)
         ).sanitized()
     }
 }

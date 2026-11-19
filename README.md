@@ -23,10 +23,11 @@ After this, the app opens normally. See Apple's [Safely open apps on your Mac](h
 
 Use macOS 14.4 or later with the Swift 6 toolchain. Optionally, run `bash Packaging/setup-development-signing.sh` once. It creates a local **AI Usage Development** code-signing certificate in the login Keychain, so that rebuilds keep the same signing identity, and writes the ignored `.local.mk` file. Without it, builds use an ad-hoc signature. Run `make run` to build, sign, and open `.build/AI Usage.app`. Use the app bundle, not `swift run`, for macOS notifications. You can copy the bundle to `/Applications`. Run `make test` for the offline test suite. CI uses Xcode 26.5 (17F42).
 
-Open **Accounts…** in the menu. Enable individual providers and allow notifications if you want them. The app polls connected providers at launch and approximately once a minute while running. You can also refresh a provider from the menu. Failed reads do not refill quota: the menu keeps the last reading with its observation time. A missing reset date means the provider did not report one.
-Click the gauge to see current quota and reset times. Use **Connect** beside a provider to start subscription sign-in directly. Claude asks you to paste the authorization code shown after browser sign-in. Codex returns through a loopback callback. Kimi uses device authorization and shows its sign-in code while the app waits. Z.ai uses browser sign-in and creates its subscription credential automatically.
+Open **Preferences…** (⌘,) in the menu. You connect and sign in to providers only there: select a provider under **Subscriptions** and choose its connect action. Claude asks you to paste the authorization code shown after browser sign-in. Codex returns through a loopback callback. Kimi uses device authorization and shows its sign-in code while the app waits. Z.ai uses browser sign-in and creates its subscription credential automatically. When a provider needs a new sign-in, its sidebar row and the **Preferences…** menu row show an orange dot; choose **Sign In…** in its pane.
 
-You can also open **Accounts…**, select a provider, and choose its connect action. OAuth tokens and the Z.ai subscription key are stored in private files under `~/.config/aiusage`. Direct OAuth reuses the providers’ CLI client configuration. Provider terms and undocumented endpoints can change. AI Usage reports endpoint failures and does not substitute estimated quota. Choose **Notifications** in the sidebar to turn on alerts. AI Usage checks active sources approximately once a minute while running. If a read fails, the menu keeps the last observation and its time. A missing reset date means the provider did not report one.
+Click the gauge to see current quota and reset times. The menu lists only active subscriptions: connected providers that do not need a new sign-in. The app polls connected providers at launch and approximately once a minute while running. You can also refresh a provider from the menu. Failed reads do not refill quota: the menu keeps the last reading with its observation time. A missing reset date means the provider did not report one.
+
+OAuth tokens and the Z.ai subscription key are stored in private files under `~/.config/aiusage`. Direct OAuth reuses the providers’ CLI client configuration. Provider terms and undocumented endpoints can change. AI Usage reports endpoint failures and does not substitute estimated quota. The **System** section of the sidebar has three panes: **General** turns on **Open AI Usage at login** (macOS can ask you to approve the login item in System Settings > General > Login Items), **Notifications** turns on alerts, and **About** shows the version.
 
 The menu and account controls use native Liquid Glass on macOS 26 and later. With Reduce Transparency enabled, or on earlier supported versions, the app uses bordered controls.
 
@@ -36,6 +37,16 @@ The menu and account controls use native Liquid Glass on macOS 26 and later. Wit
 | Codex | Choose **Connect with Codex** and complete browser OAuth. AI Usage listens on `127.0.0.1:1455` for the callback, then reads account-scoped usage directly. | Confirm redemption of one identified, free banked reset in the app. If no eligible credit ID is reported, use the [Codex usage dashboard](https://chatgpt.com/codex/settings/usage). |
 | Z.ai | Choose **Connect with Z.ai** and complete browser sign-in. AI Usage captures the `zcode://` callback automatically and restores the previous URL handler. A branded paste dialog remains available as a fallback. The app creates an **AI Usage** subscription key and stores it in its private credential file. | Open the [subscription page](https://z.ai/manage-apikey/subscription). The app reports available five-hour and weekly reset-card counts and the nearest expiry. Redeem cards only on the provider site; availability depends on the account and campaign. |
 | Kimi | Choose **Connect with Kimi**, open the device-authorization page, and confirm the displayed code. AI Usage polls until authorization finishes or expires. | Kimi documents automatic resets. The menu links to the [Kimi Code Console](https://www.kimi.com/code/console); an Extra Usage purchase is not a reset. |
+
+### Subscription renewal date
+
+The **Account** section of a provider in **Preferences…** shows the date at which the subscription period ends, as the provider reports it. AI Usage does not calculate this date.
+
+- Codex: **Current period ends**, from the `chatgpt_subscription_active_until` claim of the sign-in token. The token keeps this value until the sign-in renews.
+- Z.ai: **Renews** or **Ends** (**Current period ends** when Z.ai does not say), from `nextRenewTime` and `autoRenew` of the active Coding Plan in the subscription list, the same read-only call that the official ZCode client makes with the subscription key.
+- Claude and Kimi do not report a renewal date, so their section has no date row.
+
+A missing row means that the provider did not report a date, or that the date has passed. After a reported date passes, AI Usage reads the account again, hourly at first and less often the longer the date stays in the past.
 
 ### Notifications
 
