@@ -44,15 +44,24 @@ public struct AccountIdentity: Equatable, Codable, Sendable {
     public let name: String?
     public let plan: String?
     public let organization: String?
+    /// End of the current subscription period, or the next renewal when `renews` is true.
+    public let periodEnd: Date?
+    /// Whether the provider reports that the plan renews at `periodEnd`; nil when it does not say.
+    public let renews: Bool?
 
-    public init(email: String? = nil, name: String? = nil, plan: String? = nil, organization: String? = nil) {
+    public init(
+        email: String? = nil, name: String? = nil, plan: String? = nil, organization: String? = nil,
+        periodEnd: Date? = nil, renews: Bool? = nil
+    ) {
         self.email = email
         self.name = name
         self.plan = plan
         self.organization = organization
+        self.periodEnd = periodEnd
+        self.renews = renews
     }
 
-    public var isEmpty: Bool { email == nil && name == nil && plan == nil && organization == nil }
+    public var isEmpty: Bool { email == nil && name == nil && plan == nil && organization == nil && periodEnd == nil }
 }
 
 public struct QuotaSnapshot: Equatable, Codable, Sendable {

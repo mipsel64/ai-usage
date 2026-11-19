@@ -314,7 +314,7 @@ public enum RemoteUsage {
         return QuotaSnapshot(windows: windows, observedAt: observedAt)
     }
 
-    fileprivate static func parseRFC3339(_ value: String) -> Date? {
+    static func parseRFC3339(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = formatter.date(from: value) { return date }

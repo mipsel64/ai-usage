@@ -97,7 +97,10 @@ public enum ProviderCatalog {
                           return CodexAccountIdentity.decode(tokens: tokens)
                       }) { try await CodexRemoteUsage.fetch(tokens: $0.oauthTokens()) },
         QuotaProvider(id: .zai, displayName: "Z.ai", accountURL: zaiUsage,
-                      connection: .browserLogin, reset: .website(zaiUsage)) {
+                      connection: .browserLogin, reset: .website(zaiUsage), readAccount: {
+                          guard case let .apiKey(key) = $0 else { return nil }
+                          return try? await ZaiAccountIdentity.fetchSubscription(key: key)
+                      }) {
             try await RemoteUsage.fetch(provider: .zai, credential: $0.key())
         },
         QuotaProvider(id: .kimi, displayName: "Kimi", accountURL: URL(string: "https://www.kimi.com/code/console")!,
