@@ -16,7 +16,8 @@ final class CredentialSession {
     private(set) var unsaved: Set<ProviderID> = []
     /// Providers whose refresh token the provider refused; only an interactive use tries again.
     private(set) var refused: Set<ProviderID> = []
-    /// When a renewal after a 401 last started; a provider that rejects fresh tokens gets no renewal storm.
+    /// When a renewal after a 401 last started. A pause covers a renewal that runs or succeeded, so a provider that
+    /// rejects fresh tokens gets no renewal storm; a temporary failure clears it, so the next use renews again.
     private var forcedRenewals: [ProviderID: Date] = [:]
 
     init(vault: any CredentialVaulting, oauth: any SubscriptionOAuthDriving, now: @escaping () -> Date) {
@@ -63,7 +64,8 @@ final class CredentialSession {
     }
 
     /// Runs `operation`, and after a 401 runs it once more with renewed OAuth tokens.
-    /// Automatic uses renew this way at most once per lead time, so a provider that rejects fresh tokens causes no storm.
+    /// Automatic uses renew this way at most once per lead time after a forced renewal that succeeded or is running,
+    /// so a provider that rejects fresh tokens causes no storm. A temporary renewal failure starts no pause.
     func withRenewal<T>(
         _ access: ProviderAccess,
         for id: ProviderID,
@@ -84,7 +86,13 @@ final class CredentialSession {
                     throw QuotaError.unauthorized
                 }
                 forcedRenewals[id] = now()
-                tokens = try await renew(rejected, for: id)
+                do {
+                    tokens = try await renew(rejected, for: id)
+                } catch let error as ActionError {
+                    guard connection == connections[id] else { throw QuotaError.unavailable }
+                    forcedRenewals[id] = nil
+                    throw error
+                }
                 guard connection == connections[id] else { throw QuotaError.unavailable }
             } else {
                 tokens = current
