@@ -29,4 +29,12 @@ struct WindowResetTests {
         #expect(sample(60, 100, 80, id: "daily").refreshedWindows(since: old).isEmpty)
         #expect(sample(60, 25, 50).refreshedWindows(since: old).isEmpty)
     }
+
+    @Test func skipsWindowsThatHadMoreThan80PercentLeftBeforeTheRefresh() {
+        let newPeriod = sample(55, 100, 100)
+        #expect(newPeriod.refreshedWindows(since: sample(10, 99, 50)).isEmpty)
+        #expect(sample(20, 100, 50).refreshedWindows(since: sample(10, 99, 50)).isEmpty)
+        #expect(newPeriod.refreshedWindows(since: sample(10, 80.5, 50)).isEmpty)
+        #expect(newPeriod.refreshedWindows(since: sample(10, 80, 50)) == newPeriod.windows)
+    }
 }

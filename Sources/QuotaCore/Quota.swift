@@ -76,11 +76,14 @@ public struct QuotaSnapshot: Equatable, Codable, Sendable {
     }
 
     public static let lowQuotaThresholds = [20, 10]
+    /// A window with more than this percentage left before its refresh was barely used, so its refresh does not alert.
+    static let refreshAlertMaxRemainingPercent = 80.0
 
     public func refreshedWindows(since previous: Self) -> [QuotaWindow] {
         guard observedAt > previous.observedAt else { return [] }
         return windows.filter { window in
-            guard let last = previous.windows.first(where: { $0.id == window.id }) else { return false }
+            guard let last = previous.windows.first(where: { $0.id == window.id }),
+                  last.remainingPercent <= Self.refreshAlertMaxRemainingPercent else { return false }
             if last.remainingPercent < 100 && window.remainingPercent == 100 { return true }
             guard let before = last.resetAt, let after = window.resetAt else { return false }
             return before <= observedAt && after > observedAt && after > before
