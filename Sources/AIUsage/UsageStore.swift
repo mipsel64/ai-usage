@@ -31,6 +31,8 @@ final class UsageStore {
     /// Start time of the last account read for the current connection.
     private var accountReads: [ProviderID: Date] = [:]
     private var accountTasks: [ProviderID: Task<Void, Never>] = [:]
+    /// Start time of the last quota read, automatic or manual, for each provider's refresh interval.
+    private var quotaReads: [ProviderID: Date] = [:]
     private var redeeming: Set<ProviderID> = []
     private(set) var notificationsEnabled: Bool
     private(set) var notificationStatus: String = ""
@@ -82,7 +84,7 @@ final class UsageStore {
         if notificationsEnabled { await updatePermissionStatus() }
         while !Task.isCancelled {
             await withTaskGroup(of: Void.self) { group in
-                for provider in providers where states[provider.id]?.connected == true {
+                for provider in providers where quotaReadDue(provider, at: now()) {
                     group.addTask { await self.refresh(provider.id) }
                 }
             }
@@ -116,6 +118,7 @@ final class UsageStore {
             connectionAccess = .oauth(try await oauth.login(id))
         }
         guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
+        quotaReads[id] = now()
         let firstReading = try await provider.read(connectionAccess)
         guard generation == generations[id], !redeeming.contains(id) else { throw QuotaError.unavailable }
         // A new sign-in replaces the stored credential only after its first reading succeeds.
@@ -183,6 +186,12 @@ final class UsageStore {
         return now.timeIntervalSince(last) >= max(3600, now.timeIntervalSince(periodEnd) / 4)
     }
 
+    /// A connected provider is due once its refresh interval has passed since its last quota read started.
+    func quotaReadDue(_ provider: QuotaProvider, at date: Date) -> Bool {
+        guard states[provider.id]?.connected == true else { return false }
+        return quotaReads[provider.id].map { date.timeIntervalSince($0) >= provider.refreshInterval } ?? true
+    }
+
     func accountReadTask(for id: ProviderID) -> Task<Void, Never>? {
         accountTasks[id]
     }
@@ -204,7 +213,11 @@ final class UsageStore {
         do {
             let access = try await access(for: provider, interactive: interactive)
             guard generation == generations[id] else { return }
-            let (reading, readingAccess) = try await session.withRenewal(access, for: id, provider.read)
+            // Each call to the reader, including the retry after a renewal, starts the refresh interval.
+            let (reading, readingAccess) = try await session.withRenewal(access, for: id) { access in
+                quotaReads[id] = now()
+                return try await provider.read(access)
+            }
             guard generation == generations[id] else { return }
             if let last = state.snapshot, reading.observedAt < last.observedAt, last.observedAt <= .now {
                 throw QuotaError.invalidResponse
