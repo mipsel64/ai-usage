@@ -4,13 +4,19 @@ import SwiftUI
 private let repositoryURL = URL(string: "https://github.com/mipsel64/ai-usage")!
 
 struct AboutPanel: View {
-    private var version: String {
+    /// `<version>+<commit>`, only the version without a commit, and nil outside a bundle.
+    nonisolated static func version(short: String?, commit: String?) -> String? {
+        guard let short else { return nil }
+        guard let commit else { return short }
+        return "\(short)+\(commit)"
+    }
+
+    private var version: String? {
         let info = Bundle.main.infoDictionary
-        guard let short = info?["CFBundleShortVersionString"] as? String else { return "Development build" }
-        if let build = info?["CFBundleVersion"] as? String, build != short {
-            return "Version \(short) (\(build))"
-        }
-        return "Version \(short)"
+        return Self.version(
+            short: info?["CFBundleShortVersionString"] as? String,
+            commit: info?["AIUsageCommit"] as? String
+        )
     }
 
     var body: some View {
@@ -32,9 +38,8 @@ struct AboutPanel: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("AI Usage")
                                 .font(.title2.bold())
-                            Text(version)
+                            versionLine
                                 .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
                         }
                     }
                     Link("GitHub repository", destination: repositoryURL)
@@ -43,5 +48,21 @@ struct AboutPanel: View {
             .formStyle(.grouped)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var versionLine: some View {
+        if let version {
+            HStack(spacing: 4) {
+                Text("Version")
+                Text(version)
+                    .monospaced()
+                    .textSelection(.enabled)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Version \(version)")
+        } else {
+            Text("Development build")
+        }
     }
 }
