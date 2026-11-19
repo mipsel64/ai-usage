@@ -23,11 +23,13 @@ final class UsageStore {
     let providers: [QuotaProvider]
     private let defaults: UserDefaults
     private let session: CredentialSession
+    private let now: () -> Date
     private let oauth: any SubscriptionOAuthDriving
     private let browserLogin: any ZaiBrowserLoginDriving
     private(set) var states: [ProviderID: ProviderState] = [:]
     private var generations: [ProviderID: UUID] = [:]
-    private var loadedAccounts: Set<ProviderID> = []
+    /// Start time of the last account read for the current connection.
+    private var accountReads: [ProviderID: Date] = [:]
     private var accountTasks: [ProviderID: Task<Void, Never>] = [:]
     private var redeeming: Set<ProviderID> = []
     private(set) var notificationsEnabled: Bool
@@ -47,6 +49,7 @@ final class UsageStore {
         let oauth = oauth ?? SubscriptionOAuthController()
         self.oauth = oauth
         session = CredentialSession(vault: vault ?? CredentialVault(), oauth: oauth, now: now)
+        self.now = now
         self.browserLogin = browserLogin ?? ZaiBrowserLoginController()
         notificationsEnabled = defaults.bool(forKey: "notify")
         for provider in providers {
@@ -114,7 +117,7 @@ final class UsageStore {
         }
         let connectedGeneration = UUID()
         generations[id] = connectedGeneration
-        loadedAccounts.remove(id)
+        accountReads[id] = nil
         accountTasks[id]?.cancel()
         accountTasks[id] = nil
         defaults.removeObject(forKey: "snapshot.\(id.rawValue)")
@@ -124,9 +127,7 @@ final class UsageStore {
         }
         states[id] = ProviderState(connected: true, snapshot: firstReading, account: signInAccount)
         defaults.set(try JSONEncoder().encode(firstReading), forKey: "snapshot.\(id.rawValue)")
-        if signInAccount == nil {
-            startAccountRead(for: provider, access: connectionAccess, generation: connectedGeneration)
-        }
+        startAccountRead(for: provider, access: connectionAccess, generation: connectedGeneration)
     }
 
     func disconnect(_ id: ProviderID) async throws {
@@ -136,7 +137,7 @@ final class UsageStore {
         default: break
         }
         generations[id] = UUID()
-        loadedAccounts.remove(id)
+        accountReads[id] = nil
         accountTasks[id]?.cancel()
         accountTasks[id] = nil
         for prefix in ["connected", "path", "snapshot", "oauthVersion"] { defaults.removeObject(forKey: "\(prefix).\(id.rawValue)") }
@@ -145,14 +146,32 @@ final class UsageStore {
 
     private func startAccountRead(for provider: QuotaProvider, access: ProviderAccess, generation: UUID?) {
         let id = provider.id
+        let startedAt = now()
         guard let readAccount = provider.readAccount, generation == generations[id],
-              states[id]?.connected == true, !loadedAccounts.contains(id) else { return }
-        loadedAccounts.insert(id)
+              states[id]?.connected == true, accountReadDue(id, at: startedAt) else { return }
+        accountReads[id] = startedAt
         accountTasks[id] = Task {
             let identity = await readAccount(access)?.sanitized()
             guard !Task.isCancelled, generation == generations[id], states[id]?.connected == true else { return }
-            states[id]?.account = identity
+            let previous = states[id]?.account
+            // Keep fields a later read does not report, such as the Z.ai sign-in identity; the period is always the latest.
+            states[id]?.account = identity.map {
+                AccountIdentity(
+                    email: $0.email ?? previous?.email, name: $0.name ?? previous?.name,
+                    plan: $0.plan ?? previous?.plan, organization: $0.organization ?? previous?.organization,
+                    periodEnd: $0.periodEnd, renews: $0.renews
+                )
+            } ?? previous
         }
+    }
+
+    /// The account is read once per connection, and again after its reported period has ended:
+    /// hourly at first, then less often the longer the date stays in the past.
+    private func accountReadDue(_ id: ProviderID, at now: Date) -> Bool {
+        guard let last = accountReads[id] else { return true }
+        guard let periodEnd = states[id]?.account?.periodEnd, periodEnd <= now else { return false }
+        // A provider can keep reporting a past date; back off so its endpoint is not called hourly without end.
+        return now.timeIntervalSince(last) >= max(3600, now.timeIntervalSince(periodEnd) / 4)
     }
 
     func accountReadTask(for id: ProviderID) -> Task<Void, Never>? {

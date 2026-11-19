@@ -129,6 +129,109 @@ struct AccountIdentityTests {
         #expect(CodexAccountIdentity.decode(jwt: makeJWT(["email": 42])) == nil)
     }
 
+    @Test func codexReadsSubscriptionActiveUntilClaim() throws {
+        func periodEnd(_ value: Any) -> Date? {
+            CodexAccountIdentity.decode(jwt: makeJWT([
+                "https://api.openai.com/auth": ["chatgpt_plan_type": "plus", "chatgpt_subscription_active_until": value],
+            ]))?.periodEnd
+        }
+        #expect(periodEnd("2030-07-29T12:09:00Z") == Date(timeIntervalSince1970: 1_911_557_340))
+        let fractional = try #require(periodEnd("2030-07-29T12:09:00.284171+00:00"))
+        #expect(abs(fractional.timeIntervalSince1970 - 1_911_557_340.284) < 0.001)
+        #expect(CodexAccountIdentity.decode(jwt: makeJWT([
+            "https://api.openai.com/auth": ["chatgpt_plan_type": "plus"],
+        ])) == AccountIdentity(plan: "plus"))
+        #expect(periodEnd("2030-07-29") == nil)
+        #expect(periodEnd("next month") == nil)
+        #expect(periodEnd(1_911_557_340) == nil)
+        #expect(periodEnd("2019-12-31T23:59:59Z") == nil)
+        #expect(periodEnd("2090-01-01T00:00:00Z") == nil)
+        #expect(CodexAccountIdentity.decode(jwt: makeJWT([
+            "https://api.openai.com/auth": ["chatgpt_subscription_active_until": "1970-01-01T00:00:00Z"],
+        ])) == nil)
+    }
+
+    @Test func codexTakesPeriodEndFromIDTokenWhenAccessTokenLacksIt() {
+        let accessToken = makeJWT(["https://api.openai.com/auth": ["chatgpt_plan_type": "plus"]])
+        let idToken = makeJWT(["https://api.openai.com/auth": ["chatgpt_subscription_active_until": "2030-07-29T12:09:00Z"]])
+        let identity = CodexAccountIdentity.decode(tokens: OAuthTokens(
+            accessToken: accessToken, refreshToken: "refresh",
+            expiresAt: Date().addingTimeInterval(3600), idToken: idToken
+        ))
+        #expect(identity == AccountIdentity(plan: "plus", periodEnd: Date(timeIntervalSince1970: 1_911_557_340)))
+    }
+
+    @Test func zaiFetchesSubscriptionListWithTheSubscriptionKey() async throws {
+        let transport = AccountIdentityTransport(response: .init(statusCode: 200, body: zaiList(#"{"productName":"GLM Coding Max","status":"VALID","inCurrentPeriod":true,"autoRenew":1,"nextRenewTime":"2030-03-12"}"#)))
+        let identity = try await ZaiAccountIdentity.fetchSubscription(key: "synthetic-key", transport: transport)
+        #expect(identity == AccountIdentity(periodEnd: localMidnight(2030, 3, 12), renews: true))
+        let request = await transport.onlyRequest()
+        #expect(request.url?.absoluteString == "https://api.z.ai/api/biz/subscription/list")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-key")
+    }
+
+    @Test func zaiReadsRenewalOfTheActiveCodingPlan() {
+        func plan(_ fields: String) -> AccountIdentity? {
+            ZaiAccountIdentity.decodeSubscription(zaiList(
+                #"{"productName":"GLM Coding Pro","status":"VALID","inCurrentPeriod":true,"# + fields + "}"
+            ))
+        }
+        #expect(plan(#""autoRenew":true,"nextRenewTime":"2030-03-12""#)?.renews == true)
+        #expect(plan(#""autoRenew":0,"nextRenewTime":"2030-03-12""#) == AccountIdentity(periodEnd: localMidnight(2030, 3, 12), renews: false))
+        #expect(plan(#""autoRenew":false,"nextRenewTime":"2030-03-12""#)?.renews == false)
+        #expect(plan(#""nextRenewTime":"2030-03-12""#) == AccountIdentity(periodEnd: localMidnight(2030, 3, 12)))
+        #expect(plan(#""autoRenew":"yes","nextRenewTime":"2030-03-12""#)?.renews == nil)
+        #expect(plan(#""autoRenew":1,"nextRenewTime":"2030-03-12 16:55:13""#)?.periodEnd == Date(timeIntervalSince1970: 1_899_536_113))
+        #expect(plan(#""autoRenew":1"#) == nil)
+        #expect(plan(#""autoRenew":1,"nextRenewTime":"2030-02-30""#) == nil)
+        #expect(plan(#""autoRenew":1,"nextRenewTime":"soon""#) == nil)
+        #expect(plan(#""autoRenew":1,"nextRenewTime":1899536113"#) == nil)
+        #expect(plan(#""autoRenew":1,"nextRenewTime":"2030-03-12T16:55:13""#) == nil)
+        #expect(plan(#""autoRenew":1,"nextRenewTime":"2019-12-31""#) == nil)
+        #expect(plan(#""autoRenew":1,"nextRenewTime":"2090-01-01""#) == nil)
+    }
+
+    @Test func zaiSkipsUnrelatedEntriesAndRejectsFailedEnvelopes() {
+        let active = #"{"productId":"coding-pro","status":"VALID","inCurrentPeriod":true,"autoRenew":1,"nextRenewTime":"2030-03-12"}"#
+        let unrelated = [
+            #""text""#,
+            #"{"productName":"GLM Search","status":"VALID","inCurrentPeriod":true,"nextRenewTime":"2030-01-01"}"#,
+            #"{"productName":"GLM Coding Lite","status":"EXPIRED","inCurrentPeriod":true,"nextRenewTime":"2030-01-02"}"#,
+            #"{"productName":"GLM Coding Lite","status":"VALID","inCurrentPeriod":false,"nextRenewTime":"2030-01-03"}"#,
+        ].joined(separator: ",")
+        #expect(ZaiAccountIdentity.decodeSubscription(zaiList(unrelated + "," + active))?.periodEnd == localMidnight(2030, 3, 12))
+        #expect(ZaiAccountIdentity.decodeSubscription(zaiList(unrelated)) == nil)
+        #expect(ZaiAccountIdentity.decodeSubscription(zaiList("")) == nil)
+        #expect(ZaiAccountIdentity.decodeSubscription(Data(#"{"code":500,"data":[\#(active)]}"#.utf8)) == nil)
+        #expect(ZaiAccountIdentity.decodeSubscription(Data(#"{"success":false,"data":[\#(active)]}"#.utf8)) == nil)
+        #expect(ZaiAccountIdentity.decodeSubscription(Data(#"{"data":[\#(active)]}"#.utf8))?.renews == true)
+        #expect(ZaiAccountIdentity.decodeSubscription(Data(#"{"code":200,"data":{}}"#.utf8)) == nil)
+        #expect(ZaiAccountIdentity.decodeSubscription(Data("not json".utf8)) == nil)
+    }
+
+    @Test func storedIdentityWithoutPeriodStillDecodes() throws {
+        let old = try JSONDecoder().decode(AccountIdentity.self, from: Data(#"{"email":"user@example.com","plan":"pro"}"#.utf8))
+        #expect(old == AccountIdentity(email: "user@example.com", plan: "pro"))
+        let current = AccountIdentity(plan: "pro", periodEnd: Date(timeIntervalSince1970: 1_911_557_340), renews: false)
+        #expect(try JSONDecoder().decode(AccountIdentity.self, from: JSONEncoder().encode(current)) == current)
+    }
+
+    @Test func sanitizingKeepsAPlausiblePeriodAndDropsRenewalWithoutIt() {
+        let periodEnd = Date().addingTimeInterval(86_400)
+        #expect(AccountIdentity(periodEnd: periodEnd, renews: true).sanitized() == AccountIdentity(periodEnd: periodEnd, renews: true))
+        #expect(AccountIdentity(renews: true).sanitized() == nil)
+        #expect(AccountIdentity(name: "Alice", periodEnd: Date(timeIntervalSince1970: 0), renews: true).sanitized()
+            == AccountIdentity(name: "Alice"))
+    }
+
+    private func zaiList(_ items: String) -> Data {
+        Data((#"{"code":200,"msg":"ok","success":true,"data":["# + items + "]}").utf8)
+    }
+
+    private func localMidnight(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        Calendar(identifier: .gregorian).date(from: DateComponents(year: year, month: month, day: day))!
+    }
+
     @Test func kimiDecodesAndSanitisesManagedProfile() async throws {
         let body = Data(#"{"user_id":"user-1","email":" user@example.com ","nickname":" Alice "}"#.utf8)
         let transport = AccountIdentityTransport(response: .init(statusCode: 200, body: body))
