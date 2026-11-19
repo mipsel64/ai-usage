@@ -22,7 +22,8 @@ struct GeneralPanel: View {
     private var openAtLogin: Binding<Bool> {
         Binding(
             get: { Self.loginItem(for: status).isOn },
-            set: setOpenAtLogin
+            // A method reference here crashes the Swift 6.3.2 compiler of Xcode 26.5 during IR generation.
+            set: { setOpenAtLogin($0) }
         )
     }
 
