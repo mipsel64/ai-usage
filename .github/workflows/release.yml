@@ -60,6 +60,6 @@ jobs:
           tag="$GITHUB_REF_NAME"
           prerelease=()
           if [[ "$tag" == *-* ]]; then prerelease=(--prerelease); fi
-          notes=$'AI Usage is ad hoc signed and not notarized by Apple.\nBefore the first open, read the [Install](https://github.com/mipsel64/ai-usage#install) section of the README.'
+          notes=$'AI Usage is ad hoc signed and not notarized by Apple. At the first open, macOS can say that the app is damaged. It is not.\nRead the [Install](https://github.com/mipsel64/ai-usage#install) section of the README for the first-open steps.'
           gh release create "$tag" --verify-tag --generate-notes --notes "$notes" "${prerelease[@]}" \
             .build/AI-Usage-*.dmg .build/AI-Usage-*.dmg.sha256
