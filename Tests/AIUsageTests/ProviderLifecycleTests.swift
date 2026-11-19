@@ -153,6 +153,25 @@ struct ProviderLifecycleTests {
         #expect(store.states[id]?.message?.contains("secret") == false)
     }
 
+    @Test func menuListsOnlyConnectedProvidersThatNeedNoSignIn() {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func provider(_ raw: String, _ connection: ProviderConnection) -> QuotaProvider {
+            QuotaProvider(id: ProviderID(rawValue: raw), displayName: raw, accountURL: account,
+                          connection: connection, reset: .automaticOnly) { _ in throw QuotaError.unavailable }
+        }
+        let active = provider("active", .apiKey)
+        // An OAuth connection without the current OAuth version needs a new sign-in.
+        let signIn = provider("sign-in", .oauth)
+        let disconnected = provider("disconnected", .apiKey)
+        defaults.set(true, forKey: "connected.active")
+        defaults.set(true, forKey: "connected.sign-in")
+        let store = UsageStore(providers: [active, signIn, disconnected], defaults: defaults, vault: RecordingCredentialVault())
+        #expect(store.states[signIn.id]?.needsAuthentication == true)
+        #expect(store.activeProviders.map(\.id) == [active.id])
+        #expect(store.needsSignIn)
+    }
+
     private func preferences() -> (UserDefaults, String) {
         let suite = "AIUsage.Tests.\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)

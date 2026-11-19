@@ -8,22 +8,20 @@ struct QuotaMenuHeader: View {
 
     private static let refreshButtonSize: CGFloat = 26
 
+    private var activeStates: [ProviderState] {
+        store.activeProviders.compactMap { store.states[$0.id] }
+    }
+
     private var latestObservation: Date? {
-        store.states.values
-            .filter { $0.connected }
-            .compactMap(\.snapshot?.observedAt)
-            .max()
+        activeStates.compactMap(\.snapshot?.observedAt).max()
     }
 
     private var refreshableProviders: [QuotaProvider] {
-        store.providers.filter { provider in
-            guard let state = store.states[provider.id] else { return false }
-            return state.connected && !state.needsAuthentication && !state.loading
-        }
+        store.activeProviders.filter { store.states[$0.id]?.loading == false }
     }
 
     private var isRefreshing: Bool {
-        store.states.values.contains { $0.connected && $0.loading }
+        activeStates.contains(where: \.loading)
     }
 
     var body: some View {
