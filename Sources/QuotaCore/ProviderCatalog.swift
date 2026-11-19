@@ -42,11 +42,13 @@ public struct QuotaProvider: Identifiable, Sendable {
     public let accountURL: URL
     public let connection: ProviderConnection
     public let reset: ResetAction
+    /// Shortest time between automatic quota reads; some providers rate-limit their usage endpoint.
+    public let refreshInterval: TimeInterval
     public let readAccount: (@Sendable (ProviderAccess) async -> AccountIdentity?)?
     public let read: @Sendable (ProviderAccess) async throws -> QuotaSnapshot
 
     public init(id: ProviderID, displayName: String, accountURL: URL, connection: ProviderConnection,
-                reset: ResetAction,
+                reset: ResetAction, refreshInterval: TimeInterval = 60,
                 readAccount: (@Sendable (ProviderAccess) async -> AccountIdentity?)? = nil,
                 read: @escaping @Sendable (ProviderAccess) async throws -> QuotaSnapshot) {
         self.id = id
@@ -54,6 +56,7 @@ public struct QuotaProvider: Identifiable, Sendable {
         self.accountURL = accountURL
         self.connection = connection
         self.reset = reset
+        self.refreshInterval = refreshInterval
         self.readAccount = readAccount
         self.read = read
     }
@@ -77,8 +80,9 @@ public enum ProviderCatalog {
     private static let zaiUsage = URL(string: "https://z.ai/manage-apikey/subscription")!
 
     public static let all: [QuotaProvider] = [
+        // /api/oauth/usage allows about one read per 2 minutes per token; a 60 s poll got HTTP 429 on 4 reads in 10.
         QuotaProvider(id: .claude, displayName: "Claude", accountURL: claudeUsage,
-                      connection: .oauth, reset: .website(claudeUsage), readAccount: {
+                      connection: .oauth, reset: .website(claudeUsage), refreshInterval: 180, readAccount: {
                           guard case let .oauth(tokens) = $0 else { return nil }
                           return try? await ClaudeAccountIdentity.fetch(tokens: tokens)
                       }) {

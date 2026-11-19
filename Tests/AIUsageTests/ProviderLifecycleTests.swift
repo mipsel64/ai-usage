@@ -19,7 +19,7 @@ struct ProviderLifecycleTests {
         let store = UsageStore(providers: [provider], defaults: defaults, vault: vault)
         try await store.connect(id, secret: "secret")
         #expect(store.states[id]?.snapshot == snapshot)
-        await source.goOffline()
+        await source.fail(with: .unavailable)
         await store.refresh(id)
         #expect(store.states[id]?.message != nil)
         #expect(store.states[id]?.snapshot == snapshot)
@@ -188,6 +188,80 @@ struct ProviderLifecycleTests {
         #expect(store.states[id]?.message == QuotaError.notConfigured.localizedDescription)
     }
 
+    @Test func automaticReadsWaitForTheRefreshIntervalAfterEveryReadStart() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = OAuthClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+        let source = ChangingSource(QuotaSnapshot(windows: [.init(id: "hour", title: "Hourly", remainingPercent: 53, resetAt: nil)], observedAt: clock.now))
+        // Each read of the limited provider takes 20 seconds, so a timestamp taken after the read is detected.
+        let limited = QuotaProvider(id: id, displayName: "Limited", accountURL: account, connection: .apiKey,
+                                    reset: .automaticOnly, refreshInterval: 180) { _ in
+            await MainActor.run { clock.now += 20 }
+            return try await source.read()
+        }
+        let plain = QuotaProvider(id: ProviderID(rawValue: "plain-test-provider"), displayName: "Plain", accountURL: account,
+                                  connection: .apiKey, reset: .automaticOnly) { _ in try await source.read() }
+        let vault = RecordingCredentialVault()
+        let store = UsageStore(providers: [limited, plain], defaults: defaults, vault: vault, now: { clock.now })
+        #expect(!store.quotaReadDue(limited, at: clock.now))
+
+        var start = clock.now
+        try await store.connect(limited.id, secret: "secret")
+        try await store.connect(plain.id, secret: "secret")
+        #expect(!store.quotaReadDue(limited, at: start.addingTimeInterval(179)))
+        #expect(store.quotaReadDue(limited, at: start.addingTimeInterval(180)))
+        #expect(!store.quotaReadDue(plain, at: clock.now.addingTimeInterval(59)))
+        #expect(store.quotaReadDue(plain, at: clock.now.addingTimeInterval(60)))
+
+        clock.now += 100
+        start = clock.now
+        await source.fail(with: .rateLimited)
+        await #expect(throws: QuotaError.rateLimited) { try await store.connect(limited.id, secret: "secret") }
+        #expect(!store.quotaReadDue(limited, at: start.addingTimeInterval(179)))
+        #expect(store.quotaReadDue(limited, at: start.addingTimeInterval(180)))
+
+        clock.now += 100
+        start = clock.now
+        await store.refresh(limited.id, interactive: true)
+        #expect(store.states[limited.id]?.message == QuotaError.rateLimited.localizedDescription)
+        #expect(!store.quotaReadDue(limited, at: start.addingTimeInterval(179)))
+        #expect(store.quotaReadDue(limited, at: start.addingTimeInterval(180)))
+
+        let restarted = UsageStore(providers: [limited, plain], defaults: defaults, vault: vault, now: { clock.now })
+        #expect(restarted.quotaReadDue(limited, at: clock.now))
+        #expect(restarted.quotaReadDue(plain, at: clock.now))
+        try await store.disconnect(plain.id)
+        #expect(!store.quotaReadDue(plain, at: clock.now.addingTimeInterval(3600)))
+    }
+
+    @Test func readRetriedAfterRenewalStartsTheRefreshInterval() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = OAuthClock(now: Date(timeIntervalSince1970: 1_800_000_000))
+        let source = ChangingSource(QuotaSnapshot(windows: [.init(id: "hour", title: "Hourly", remainingPercent: 53, resetAt: nil)], observedAt: clock.now))
+        let provider = QuotaProvider(id: id, displayName: "Limited", accountURL: account, connection: .oauth,
+                                     reset: .automaticOnly, refreshInterval: 180) { _ in try await source.read() }
+        let driver = StubOAuthDriver(
+            loginTokens: OAuthTokens(accessToken: "rejected", refreshToken: "refresh", expiresAt: clock.now.addingTimeInterval(3600)),
+            refreshedTokens: OAuthTokens(accessToken: "renewed", refreshToken: "next", expiresAt: clock.now.addingTimeInterval(7200))
+        )
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: MemoryCredentialVault(), oauth: driver, now: { clock.now })
+        try await store.connect(id)
+
+        clock.now += 100
+        await source.fail(with: .unauthorized)
+        // The renewal takes 20 seconds; the retried read starts after it.
+        driver.beforeRefresh = {
+            clock.now += 20
+            await source.fail(with: nil)
+        }
+        await store.refresh(id)
+        #expect(driver.refreshCalls == 1)
+        #expect(store.states[id]?.message == nil)
+        #expect(!store.quotaReadDue(provider, at: clock.now.addingTimeInterval(179)))
+        #expect(store.quotaReadDue(provider, at: clock.now.addingTimeInterval(180)))
+    }
+
     private func preferences() -> (UserDefaults, String) {
         let suite = "AIUsage.Tests.\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)
@@ -234,13 +308,13 @@ private final class RecordingCredentialVault: CredentialVaulting, @unchecked Sen
 
 private actor ChangingSource {
     let snapshot: QuotaSnapshot
-    var offline = false
+    var failure: QuotaError?
     init(_ snapshot: QuotaSnapshot) { self.snapshot = snapshot }
     func read() throws -> QuotaSnapshot {
-        if offline { throw QuotaError.unavailable }
+        if let failure { throw failure }
         return snapshot
     }
-    func goOffline() { offline = true }
+    func fail(with error: QuotaError?) { failure = error }
 }
 
 private actor ResetAttempts {
