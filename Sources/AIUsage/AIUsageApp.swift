@@ -7,6 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     let store = UsageStore()
     private var monitor: Task<Void, Never>?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NonCollapsingSidebar.forgetSavedLayout(in: .standard)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
         monitor = Task { await store.monitor() }

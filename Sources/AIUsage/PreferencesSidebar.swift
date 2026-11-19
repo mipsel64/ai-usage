@@ -40,8 +40,9 @@ struct PreferencesSidebar: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(220)
-        .frame(width: 220)
         .toolbar(removing: .sidebarToggle)
+        // Before toolbar(removing:), the column width does not reach the split view item.
+        .navigationSplitViewColumnWidth(220)
+        .background(NonCollapsingSidebar())
     }
 }
