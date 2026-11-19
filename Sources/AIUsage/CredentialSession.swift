@@ -89,6 +89,7 @@ final class CredentialSession {
                 do {
                     tokens = try await renew(rejected, for: id)
                 } catch let error as ActionError {
+                    guard connection == connections[id] else { throw QuotaError.unavailable }
                     forcedRenewals[id] = nil
                     throw error
                 }
