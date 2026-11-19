@@ -44,15 +44,28 @@ struct ProviderAccountPanel: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                ProviderAccountHeader(
-                    provider: provider,
-                    accountHost: accountHost,
-                    openAccountPage: openAccountPage
-                )
+        VStack(spacing: 0) {
+            PreferencesPaneHeader(
+                title: provider.displayName,
+                subtitle: "Quota windows and reset times of this subscription."
+            ) {
+                ProviderAvatar(provider: provider, size: 36)
+            } accessory: {
+                Button("Usage Portal", systemImage: "arrow.up.right", action: openAccountPage)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .labelStyle(.titleAndIcon)
+                    .accessibilityHint("Opens \(accountHost) in your default browser.")
+                    .help("Opens \(accountHost) in your default browser.")
             }
 
+            form
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var form: some View {
+        Form {
             if state?.connected == true {
                 AccountIdentitySection(account: state?.account)
             }
@@ -88,7 +101,6 @@ struct ProviderAccountPanel: View {
             }
         }
         .formStyle(.grouped)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var disconnectButtonTitle: String {
@@ -105,7 +117,8 @@ struct ProviderAccountPanel: View {
         }
         switch provider.connection {
         case .oauth, .browserLogin:
-            return connected ? "Reconnect…" : "Connect with \(provider.displayName)"
+            if !connected { return "Connect with \(provider.displayName)" }
+            return state?.needsAuthentication == true ? "Sign In…" : "Reconnect…"
         default:
             return connected ? "Reconnect" : "Connect"
         }

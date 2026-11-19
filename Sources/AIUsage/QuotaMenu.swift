@@ -14,8 +14,6 @@ struct QuotaMenu: View {
     @ViewState private var redeemingProvider: ProviderID?
     @ViewState private var resetResults: [ProviderID: String] = [:]
     @ViewState private var resetErrors: [ProviderID: String] = [:]
-    @ViewState private var connectionErrors: [ProviderID: String] = [:]
-    @ViewState private var connectingProviders: Set<ProviderID> = []
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -26,22 +24,30 @@ struct QuotaMenu: View {
                     .padding(.top, 6)
                     .padding(.bottom, 8)
 
-                VStack(spacing: 6) {
-                    ForEach(store.providers) { provider in
-                        ProviderCard(
-                            provider: provider,
-                            state: store.states[provider.id],
-                            now: context.date,
-                            isConnecting: connectingProviders.contains(provider.id),
-                            canRedeem: canRedeem(provider, at: context.date),
-                            resetResult: resetResults[provider.id],
-                            resetError: resetErrors[provider.id],
-                            connectionError: connectionErrors[provider.id],
-                            onConnect: { connectFromMenu(provider) },
-                            onRefresh: { refresh(provider) },
-                            onShowAccounts: { showAccounts(provider) },
-                            onRedeem: { presentResetConfirmation(for: provider) }
-                        )
+                let activeProviders = store.activeProviders
+                if activeProviders.isEmpty {
+                    Text("No active subscription. Open Preferences to connect or sign in.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                } else {
+                    VStack(spacing: 6) {
+                        ForEach(activeProviders) { provider in
+                            ProviderCard(
+                                provider: provider,
+                                state: store.states[provider.id],
+                                now: context.date,
+                                canRedeem: canRedeem(provider, at: context.date),
+                                resetResult: resetResults[provider.id],
+                                resetError: resetErrors[provider.id],
+                                onRefresh: { refresh(provider) },
+                                onShowPreferences: { showPreferences(provider) },
+                                onRedeem: { presentResetConfirmation(for: provider) }
+                            )
+                        }
                     }
                 }
 
@@ -52,10 +58,11 @@ struct QuotaMenu: View {
 
                 VStack(alignment: .leading, spacing: 0) {
                     MenuActionRow(
-                        title: "Accounts…",
-                        systemImage: "person.crop.circle",
+                        title: "Preferences…",
+                        systemImage: "gearshape",
                         shortcut: "⌘,",
-                        action: showAllAccounts
+                        showsSignInDot: store.needsSignIn,
+                        action: { showPreferences() }
                     )
                     .keyboardShortcut(",", modifiers: .command)
                     MenuActionRow(
@@ -105,33 +112,7 @@ struct QuotaMenu: View {
         NSApplication.shared.terminate(nil)
     }
 
-    private func showAllAccounts() {
-        showAccounts()
-    }
-
-    private func connectFromMenu(_ provider: QuotaProvider) {
-        switch provider.connection {
-        case .oauth, .browserLogin:
-            break
-        default:
-            showAccounts(provider)
-            return
-        }
-        guard !connectingProviders.contains(provider.id) else { return }
-
-        connectingProviders.insert(provider.id)
-        connectionErrors[provider.id] = nil
-        Task {
-            defer { connectingProviders.remove(provider.id) }
-            do {
-                try await store.connect(provider.id)
-            } catch {
-                connectionErrors[provider.id] = connectionMessage(for: error)
-            }
-        }
-    }
-
-    private func showAccounts(_ provider: QuotaProvider? = nil) {
+    private func showPreferences(_ provider: QuotaProvider? = nil) {
         NSApplication.shared.activate(ignoringOtherApps: true)
         openSettings()
         guard let provider else { return }

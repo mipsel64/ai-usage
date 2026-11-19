@@ -2,9 +2,9 @@ import QuotaCore
 import SwiftUI
 
 @MainActor
-struct AccountsSidebar: View {
+struct PreferencesSidebar: View {
     let store: UsageStore
-    @Binding var selection: AccountSelection?
+    @Binding var selection: PreferencesSelection?
 
     var body: some View {
         List(selection: $selection) {
@@ -22,19 +22,22 @@ struct AccountsSidebar: View {
                         }
                         Spacer()
                         if store.states[provider.id]?.needsAuthentication == true {
-                            Circle()
-                                .fill(.orange)
-                                .frame(width: 7, height: 7)
-                                .accessibilityLabel("Sign-in required")
+                            SignInRequiredDot()
                         }
                     }
                     .accessibilityElement(children: .combine)
-                    .tag(AccountSelection.provider(provider.id))
+                    .tag(PreferencesSelection.provider(provider.id))
                 }
             }
 
-            Label("Notifications", systemImage: "bell")
-                .tag(AccountSelection.notifications)
+            Section("System") {
+                Label("General", systemImage: "gearshape")
+                    .tag(PreferencesSelection.general)
+                Label("Notifications", systemImage: "bell")
+                    .tag(PreferencesSelection.notifications)
+                Label("About", systemImage: "info.circle")
+                    .tag(PreferencesSelection.about)
+            }
         }
         .listStyle(.sidebar)
         .navigationSplitViewColumnWidth(220)

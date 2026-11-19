@@ -7,6 +7,7 @@ struct MenuActionRow: View {
     let title: String
     let systemImage: String
     var shortcut: String?
+    var showsSignInDot = false
     let action: () -> Void
 
     @ViewState private var hovering = false
@@ -19,6 +20,9 @@ struct MenuActionRow: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 20)
                 Text(title)
+                if showsSignInDot {
+                    SignInRequiredDot()
+                }
                 Spacer()
                 if let shortcut {
                     Text(shortcut)

@@ -15,26 +15,31 @@ struct NotificationsAccountPanel: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                NotificationsAccountHeader()
+        VStack(spacing: 0) {
+            PreferencesPaneHeader(
+                title: "Notifications",
+                subtitle: "AI Usage tells you when a quota window resets or runs low."
+            ) {
+                PreferencesSymbol(systemImage: "bell")
             }
 
-            Section {
-                Toggle("Notify me when a quota resets or runs low", isOn: notificationsEnabled)
-                    .toggleStyle(.switch)
-                if !store.notificationStatus.isEmpty {
-                    Label(store.notificationStatus, systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            Form {
+                Section {
+                    Toggle("Notify me when a quota resets or runs low", isOn: notificationsEnabled)
+                        .toggleStyle(.switch)
+                    if !store.notificationStatus.isEmpty {
+                        Label(store.notificationStatus, systemImage: "info.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } footer: {
+                    Text("AI Usage reads connected subscriptions about once a minute. Low-quota alerts are sent when a window goes below \(QuotaSnapshot.lowQuotaThresholds.map { "\($0)%" }.joined(separator: " and ")). Checks and alerts stop when you quit the app.")
                         .fixedSize(horizontal: false, vertical: true)
                 }
-            } footer: {
-                Text("AI Usage reads connected subscriptions about once a minute. Low-quota alerts are sent when a window goes below \(QuotaSnapshot.lowQuotaThresholds.map { "\($0)%" }.joined(separator: " and ")). Checks and alerts stop when you quit the app.")
-                    .fixedSize(horizontal: false, vertical: true)
             }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

@@ -69,6 +69,15 @@ final class UsageStore {
         }
     }
 
+    /// Providers the menu lists: connected and not waiting for a new sign-in.
+    var activeProviders: [QuotaProvider] {
+        providers.filter { states[$0.id].map { $0.connected && !$0.needsAuthentication } ?? false }
+    }
+
+    var needsSignIn: Bool {
+        states.values.contains { $0.connected && $0.needsAuthentication }
+    }
+
     func monitor() async {
         if notificationsEnabled { await updatePermissionStatus() }
         while !Task.isCancelled {

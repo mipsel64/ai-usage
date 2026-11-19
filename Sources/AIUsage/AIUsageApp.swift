@@ -40,9 +40,9 @@ struct AIUsageApp: App {
                 .accessibilityLabel("AI Usage")
         }.menuBarExtraStyle(.window)
         Settings {
-            AccountsView(store: delegate.store)
+            PreferencesView(store: delegate.store)
         }
-        // Settings forces the preference toolbar style, which centres toolbar items; AccountsView draws the title instead.
+        // Settings forces the preference toolbar style, which centres toolbar items; each pane draws its own header instead.
         .windowToolbarStyle(.unified(showsTitle: false))
     }
 
