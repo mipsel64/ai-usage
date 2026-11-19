@@ -23,6 +23,7 @@ dmg: app
 	@set -eu; stage="$$(mktemp -d)"; trap 'rm -rf "$$stage"' EXIT; \
 	ditto "$(APP)" "$$stage/AI Usage.app"; \
 	ln -s /Applications "$$stage/Applications"; \
+	codesign --verify --deep --strict "$$stage/AI Usage.app"; \
 	hdiutil create -volname "AI Usage" -srcfolder "$$stage" -format UDZO -ov "$(DMG)"
 
 run: app
