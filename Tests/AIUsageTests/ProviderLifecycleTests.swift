@@ -172,6 +172,22 @@ struct ProviderLifecycleTests {
         #expect(store.needsSignIn)
     }
 
+    @Test func restoredBrowserLoginWithoutCredentialNeedsSignIn() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let snapshot = QuotaSnapshot(windows: [.init(id: "week", title: "Weekly", remainingPercent: 60, resetAt: nil)], observedAt: .now)
+        let provider = QuotaProvider(id: id, displayName: "Browser", accountURL: account,
+                                     connection: .browserLogin, reset: .automaticOnly) { _ in snapshot }
+        defaults.set(true, forKey: "connected.\(id.rawValue)")
+        defaults.set(try JSONEncoder().encode(snapshot), forKey: "snapshot.\(id.rawValue)")
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+        #expect(store.activeProviders.map(\.id) == [id])
+        await store.refresh(id)
+        #expect(store.activeProviders.isEmpty)
+        #expect(store.needsSignIn)
+        #expect(store.states[id]?.message == QuotaError.notConfigured.localizedDescription)
+    }
+
     private func preferences() -> (UserDefaults, String) {
         let suite = "AIUsage.Tests.\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)

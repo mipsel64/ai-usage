@@ -206,7 +206,7 @@ final class UsageStore {
         } catch {
             guard generation == generations[id] else { return }
             if case QuotaError.unauthorized = error { states[id]?.needsAuthentication = true }
-            if case .oauth = provider.connection, case QuotaError.notConfigured = error { states[id]?.needsAuthentication = true }
+            if case QuotaError.notConfigured = error { states[id]?.needsAuthentication = true }
             if case OAuthError.unauthorized = error { states[id]?.needsAuthentication = true }
             if case .oauth = provider.connection, case QuotaError.notConfigured = error {
                 states[id]?.message = "Reconnect with \(provider.displayName) to use direct OAuth."
