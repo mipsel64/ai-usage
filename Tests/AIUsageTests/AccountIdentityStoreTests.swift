@@ -341,7 +341,7 @@ struct AccountIdentityStoreTests {
         #expect(store.accountReadTask(for: id) == nil)
     }
 
-    @Test func accountIsReadAgainAfterItsPeriodEndsAtMostHourly() async throws {
+    @Test func accountIsReadAgainAfterItsPeriodEndsLessOftenAsItAges() async throws {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
         let clock = AccountClock(Date())
@@ -350,8 +350,8 @@ struct AccountIdentityStoreTests {
         let reads = AccountReadCounter()
         let provider = makeProvider { _ in
             let count = await reads.record()
-            // The second read still reports the old period, as a token that is not yet renewed does.
-            return count < 3
+            // Reads 2 to 4 still report the old period, as a token that is not yet renewed does.
+            return count < 5
                 ? AccountIdentity(email: count == 1 ? "user@example.com" : nil, periodEnd: periodEnd)
                 : AccountIdentity(periodEnd: renewed)
         }
@@ -377,11 +377,26 @@ struct AccountIdentityStoreTests {
         await store.refresh(id)
         await waitForAccountRead(store)
         #expect(await reads.count == 3)
+
+        clock.now = periodEnd.addingTimeInterval(6 * 3_600)
+        await store.refresh(id)
+        await waitForAccountRead(store)
+        #expect(await reads.count == 4)
+
+        // Eight hours after the date, reads are at least two hours apart.
+        clock.now = periodEnd.addingTimeInterval(7 * 3_600)
+        await store.refresh(id)
+        #expect(await reads.count == 4)
+
+        clock.now = periodEnd.addingTimeInterval(8 * 3_600)
+        await store.refresh(id)
+        await waitForAccountRead(store)
+        #expect(await reads.count == 5)
         #expect(store.states[id]?.account == AccountIdentity(email: "user@example.com", periodEnd: renewed))
 
         clock.now = clock.now.addingTimeInterval(7_200)
         await store.refresh(id)
-        #expect(await reads.count == 3)
+        #expect(await reads.count == 5)
     }
 
     @Test func browserSignInIdentityGainsThePeriodFromTheAccountRead() async throws {

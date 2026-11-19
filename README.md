@@ -24,13 +24,13 @@ The menu and account controls use native Liquid Glass on macOS 26 and later. Wit
 
 ### Subscription renewal date
 
-The **Account** section of a provider in **Accounts…** shows the date at which the subscription period ends, as the provider reports it. AI Usage does not calculate this date.
+The **Account** section of a provider in **Preferences…** shows the date at which the subscription period ends, as the provider reports it. AI Usage does not calculate this date.
 
-- Codex: **Current period ends**, from the `chatgpt_subscription_active_until` claim of the sign-in token ([claim reader](https://github.com/Loongphy/codex-auth/blob/771ee27bd2d75b9197effcce038e77f6df935072/src/auth/auth.zig#L169)). The token keeps this value until the sign-in renews.
-- Z.ai: **Renews** or **Ends** (**Current period ends** when Z.ai does not say), from `nextRenewTime` and `autoRenew` of the active Coding Plan in the subscription list, the same read-only call that the [official ZCode client](https://github.com/zai-org/ZCode/blob/fec975905a2abd4c07e35c40d51fa097a2258ec9/packages/services/src/usage-stats/providers/bigmodelUsageQuotaMapper.ts) makes with the subscription key.
+- Codex: **Current period ends**, from the `chatgpt_subscription_active_until` claim of the sign-in token. The token keeps this value until the sign-in renews.
+- Z.ai: **Renews** or **Ends** (**Current period ends** when Z.ai does not say), from `nextRenewTime` and `autoRenew` of the active Coding Plan in the subscription list, the same read-only call that the official ZCode client makes with the subscription key.
 - Claude and Kimi do not report a renewal date, so their section has no date row.
 
-A missing row means that the provider did not report a date, or that the date has passed. After a reported date passes, AI Usage reads the account again, at most once per hour.
+A missing row means that the provider did not report a date, or that the date has passed. After a reported date passes, AI Usage reads the account again, hourly at first and less often the longer the date stays in the past.
 
 ### Notifications
 

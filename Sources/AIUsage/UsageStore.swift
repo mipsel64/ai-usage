@@ -165,11 +165,13 @@ final class UsageStore {
         }
     }
 
-    /// The account is read once per connection, and again at most hourly after its reported period has ended.
+    /// The account is read once per connection, and again after its reported period has ended:
+    /// hourly at first, then less often the longer the date stays in the past.
     private func accountReadDue(_ id: ProviderID, at now: Date) -> Bool {
         guard let last = accountReads[id] else { return true }
         guard let periodEnd = states[id]?.account?.periodEnd, periodEnd <= now else { return false }
-        return now.timeIntervalSince(last) >= 3600
+        // A provider can keep reporting a past date; back off so its endpoint is not called hourly without end.
+        return now.timeIntervalSince(last) >= max(3600, now.timeIntervalSince(periodEnd) / 4)
     }
 
     func accountReadTask(for id: ProviderID) -> Task<Void, Never>? {

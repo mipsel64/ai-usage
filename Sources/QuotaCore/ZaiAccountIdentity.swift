@@ -3,7 +3,7 @@ import Foundation
 /// Identity is available only while Z.ai sign-in still holds the business token.
 enum ZaiAccountIdentity {
     // Same read-only call and key as the official ZCode client:
-    // https://github.com/zai-org/ZCode/blob/main/packages/services/src/bigmodel/codingPlanEntitlement.ts
+    // https://github.com/zai-org/ZCode/blob/fec975905a2abd4c07e35c40d51fa097a2258ec9/packages/services/src/bigmodel/codingPlanEntitlement.ts
     private static let subscriptionURL = URL(string: "https://api.z.ai/api/biz/subscription/list")!
 
     static func decode(user: [String: Any]?, organization: [String: Any]?) -> AccountIdentity? {
