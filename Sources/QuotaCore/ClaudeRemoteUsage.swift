@@ -9,22 +9,18 @@ public enum ClaudeRemoteUsage {
     private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage?cedar_ember=1")!
 
     public static func fetch(tokens: OAuthTokens) async throws -> QuotaSnapshot {
-        try await fetch(
-            tokens: tokens,
-            transport: RemoteUsage.defaultTransport(),
-            observedAt: nil,
-            cliVersion: ClaudeCodeVersion.current()
-        )
+        try await fetch(tokens: tokens, transport: RemoteUsage.defaultTransport(), observedAt: nil)
     }
 
     static func fetch(
         tokens: OAuthTokens,
         transport: RemoteUsageTransport,
         observedAt: Date? = nil,
-        cliVersion: String = ClaudeCodeVersion.defaultValue
+        defaults: UserDefaults = .standard
     ) async throws -> QuotaSnapshot {
         _ = try tokens.validated()
-        let body = try await RemoteUsage.execute(request(tokens: tokens, cliVersion: cliVersion), transport: transport)
+        let request = try request(tokens: tokens, cliVersion: ClaudeCodeVersion.current(in: defaults))
+        let body = try await RemoteUsage.execute(request, transport: transport)
         do {
             return try decode(body, observedAt: observedAt ?? Date())
         } catch let error as QuotaError {

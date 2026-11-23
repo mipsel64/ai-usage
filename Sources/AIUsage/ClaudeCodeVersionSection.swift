@@ -47,12 +47,7 @@ struct ClaudeCodeVersionSection: View {
 
     /// Stores each valid value as you type; an invalid value is not stored, so the last valid one stays in use.
     private func save() {
-        guard draftIsValid else { return }
-        if draft == ClaudeCodeVersion.defaultValue {
-            defaults.removeObject(forKey: ClaudeCodeVersion.defaultsKey)
-        } else {
-            defaults.set(draft, forKey: ClaudeCodeVersion.defaultsKey)
-        }
+        ClaudeCodeVersion.store(draft, in: defaults)
     }
 
     private func restoreDefault() {

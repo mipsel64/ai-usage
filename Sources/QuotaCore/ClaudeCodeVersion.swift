@@ -15,4 +15,16 @@ public enum ClaudeCodeVersion {
     public static func current(in defaults: UserDefaults = .standard) -> String {
         defaults.string(forKey: defaultsKey).flatMap { isValid($0) ? $0 : nil } ?? defaultValue
     }
+
+    /// Stores a valid version and removes the key for the default. Stores nothing and returns false for an invalid version.
+    @discardableResult
+    public static func store(_ text: String, in defaults: UserDefaults = .standard) -> Bool {
+        guard isValid(text) else { return false }
+        if text == defaultValue {
+            defaults.removeObject(forKey: defaultsKey)
+        } else {
+            defaults.set(text, forKey: defaultsKey)
+        }
+        return true
+    }
 }

@@ -17,34 +17,56 @@ struct ClaudeCodeVersionTests {
     }
 
     @Test func readsStoredVersionAndFallsBackToTheDefault() throws {
+        try withDefaults { defaults in
+            #expect(ClaudeCodeVersion.current(in: defaults) == "2.1.330")
+            defaults.set("2.1.400", forKey: ClaudeCodeVersion.defaultsKey)
+            #expect(ClaudeCodeVersion.current(in: defaults) == "2.1.400")
+            defaults.set("2.1.400\r\nX: 1", forKey: ClaudeCodeVersion.defaultsKey)
+            #expect(ClaudeCodeVersion.current(in: defaults) == "2.1.330")
+            defaults.set(5, forKey: ClaudeCodeVersion.defaultsKey)
+            #expect(ClaudeCodeVersion.current(in: defaults) == "2.1.330")
+            defaults.set(["2.1.400"], forKey: ClaudeCodeVersion.defaultsKey)
+            #expect(ClaudeCodeVersion.current(in: defaults) == "2.1.330")
+        }
+    }
+
+    @Test func storesOnlyValidVersionsAndRemovesTheKeyForTheDefault() throws {
+        try withDefaults { defaults in
+            #expect(ClaudeCodeVersion.store("2.1.400", in: defaults))
+            #expect(defaults.string(forKey: ClaudeCodeVersion.defaultsKey) == "2.1.400")
+            #expect(!ClaudeCodeVersion.store("2.1", in: defaults))
+            #expect(!ClaudeCodeVersion.store("2.1.500\r\nX: 1", in: defaults))
+            #expect(defaults.string(forKey: ClaudeCodeVersion.defaultsKey) == "2.1.400")
+            #expect(ClaudeCodeVersion.store("2.1.330", in: defaults))
+            #expect(defaults.object(forKey: ClaudeCodeVersion.defaultsKey) == nil)
+        }
+    }
+
+    @Test(arguments: [("2.1.400", "2.1.400"), ("2.1.400\r\nX: 1", "2.1.330"), ("", "2.1.330")])
+    func claudeReadSendsTheStoredVersion(stored: String, sent: String) async throws {
         let suite = "ClaudeCodeVersionTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-
-        #expect(ClaudeCodeVersion.current(in: defaults) == "2.1.330")
-        defaults.set("2.1.400", forKey: ClaudeCodeVersion.defaultsKey)
-        #expect(ClaudeCodeVersion.current(in: defaults) == "2.1.400")
-        defaults.set("2.1.400\r\nX: 1", forKey: ClaudeCodeVersion.defaultsKey)
-        #expect(ClaudeCodeVersion.current(in: defaults) == "2.1.330")
-        defaults.set(5, forKey: ClaudeCodeVersion.defaultsKey)
-        #expect(ClaudeCodeVersion.current(in: defaults) == "2.1.330")
-        defaults.set(["2.1.400"], forKey: ClaudeCodeVersion.defaultsKey)
-        #expect(ClaudeCodeVersion.current(in: defaults) == "2.1.330")
-    }
-
-    @Test func claudeReadSendsTheGivenVersion() async throws {
+        defaults.set(stored, forKey: ClaudeCodeVersion.defaultsKey)
         let transport = VersionTransport()
-        _ = try await ClaudeRemoteUsage.fetch(tokens: Self.tokens, transport: transport, cliVersion: "2.1.400")
+
+        _ = try await ClaudeRemoteUsage.fetch(tokens: Self.tokens, transport: transport, defaults: defaults)
+
         let request = try #require(await transport.requests.first)
-        #expect(request.value(forHTTPHeaderField: "User-Agent") == "claude-cli/2.1.400 (external, cli)")
+        #expect(request.value(forHTTPHeaderField: "User-Agent") == "claude-cli/\(sent) (external, cli)")
     }
 
-    @Test func claudeReadRefusesAnInvalidVersionBeforeAnyRequest() async {
-        let transport = VersionTransport()
-        await #expect(throws: QuotaError.notConfigured) {
-            _ = try await ClaudeRemoteUsage.fetch(tokens: Self.tokens, transport: transport, cliVersion: "2.1.400\r\nX: 1")
+    @Test func claudeRequestRefusesAnInvalidVersion() {
+        #expect(throws: QuotaError.notConfigured) {
+            _ = try ClaudeRemoteUsage.request(tokens: Self.tokens, cliVersion: "2.1.400\r\nX: 1")
         }
-        #expect(await transport.requests.isEmpty)
+    }
+
+    private func withDefaults(_ body: (UserDefaults) throws -> Void) throws {
+        let suite = "ClaudeCodeVersionTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try body(defaults)
     }
 
     private static let tokens = OAuthTokens(accessToken: "claude-access", refreshToken: "claude-refresh", expiresAt: Date().addingTimeInterval(3600))
