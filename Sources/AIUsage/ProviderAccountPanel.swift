@@ -91,6 +91,10 @@ struct ProviderAccountPanel: View {
                 )
             )
 
+            if provider.id == .claude {
+                ClaudeCodeVersionSection()
+            }
+
             if let openFailureMessage {
                 AccountPortalFailure(
                     message: openFailureMessage,

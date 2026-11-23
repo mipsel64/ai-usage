@@ -5,7 +5,8 @@ import Foundation
 /// https://github.com/FullFran/claudeops-tui/blob/main/docs/oauth-usage-endpoint.md
 /// and, for the model-scoped weekly entries of `limits[]`, https://github.com/can1357/oh-my-pi/pull/4344
 public enum ClaudeRemoteUsage {
-    private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+    /// `cedar_ember=1` adds the limit-reset inventory that claude.ai lists under "Limit resets".
+    private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage?cedar_ember=1")!
 
     public static func fetch(tokens: OAuthTokens) async throws -> QuotaSnapshot {
         try await fetch(tokens: tokens, transport: RemoteUsage.defaultTransport(), observedAt: nil)
@@ -14,10 +15,12 @@ public enum ClaudeRemoteUsage {
     static func fetch(
         tokens: OAuthTokens,
         transport: RemoteUsageTransport,
-        observedAt: Date? = nil
+        observedAt: Date? = nil,
+        defaults: UserDefaults = .standard
     ) async throws -> QuotaSnapshot {
         _ = try tokens.validated()
-        let body = try await RemoteUsage.execute(request(tokens: tokens), transport: transport)
+        let request = try request(tokens: tokens, cliVersion: ClaudeCodeVersion.current(in: defaults))
+        let body = try await RemoteUsage.execute(request, transport: transport)
         do {
             return try decode(body, observedAt: observedAt ?? Date())
         } catch let error as QuotaError {
@@ -27,7 +30,8 @@ public enum ClaudeRemoteUsage {
         }
     }
 
-    static func request(tokens: OAuthTokens) throws -> URLRequest {
+    static func request(tokens: OAuthTokens, cliVersion: String) throws -> URLRequest {
+        guard ClaudeCodeVersion.isValid(cliVersion) else { throw QuotaError.notConfigured }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -37,7 +41,7 @@ public enum ClaudeRemoteUsage {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("claude-cli/2.1.257 (external, cli)", forHTTPHeaderField: "User-Agent")
+        request.setValue("claude-cli/\(cliVersion) (external, cli)", forHTTPHeaderField: "User-Agent")
         request.setValue("true", forHTTPHeaderField: "anthropic-dangerous-direct-browser-access")
         request.setValue("cli", forHTTPHeaderField: "x-app")
         return request
@@ -68,7 +72,11 @@ public enum ClaudeRemoteUsage {
             ))
         }
         guard !windows.isEmpty else { throw QuotaError.invalidResponse }
-        return QuotaSnapshot(windows: windows, observedAt: observedAt)
+        return QuotaSnapshot(
+            windows: windows,
+            observedAt: observedAt,
+            resetCredits: payload.resetInventory?.credits(observedAt: observedAt)
+        )
     }
 }
 
@@ -79,6 +87,7 @@ private struct ClaudeUsagePayload: Decodable {
     let sevenDaySonnet: ClaudeUsageWindow?
     let extraUsage: ClaudeExtraUsage?
     let limits: ClaudeLimits?
+    let resetInventory: ClaudeResetInventory?
 
     enum CodingKeys: String, CodingKey {
         case fiveHour = "five_hour"
@@ -87,6 +96,7 @@ private struct ClaudeUsagePayload: Decodable {
         case sevenDaySonnet = "seven_day_sonnet"
         case extraUsage = "extra_usage"
         case limits
+        case resetInventory = "cedar_ember"
     }
 }
 
@@ -155,6 +165,66 @@ private struct ClaudeScopedWeeklyLimit: Decodable {
     }
 }
 
+/// The `cedar_ember` reset inventory: full, weekly, 5-hour and Fable resets. Contract cross-checked against
+/// https://github.com/pingdotgg/t3code/blob/main/apps/server/src/provider/claudeResetCredits.ts
+/// Decoding never throws, so an unreadable inventory cannot hide the quota windows.
+private struct ClaudeResetInventory: Decodable {
+    let eligible: Bool
+    let grants: [ClaudeResetGrant]
+
+    enum CodingKeys: String, CodingKey {
+        case eligible, grants
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try? decoder.container(keyedBy: CodingKeys.self)
+        eligible = (try? container?.decode(Bool.self, forKey: .eligible)) == true
+        grants = (try? container?.decode([ClaudeResetGrant].self, forKey: .grants)) ?? []
+    }
+
+    /// Counts the resets that can be used now; `nextID` stays nil because resets are used on claude.ai.
+    func credits(observedAt: Date) -> ResetCredits? {
+        guard eligible else { return nil }
+        let live = grants.filter { $0.usableResets > 0 && $0.endsAt.map { $0 > observedAt } ?? true }
+        return ResetCredits(
+            availableCount: live.reduce(0) { $0 + $1.usableResets },
+            nextID: nil,
+            nextTitle: nil,
+            nextExpiry: live.compactMap(\.endsAt).min()
+        )
+    }
+}
+
+/// One `grants[]` entry; `usableResets` is 0 for each entry that is unreadable, paused or not usable now.
+private struct ClaudeResetGrant: Decodable {
+    /// Bounds each count, so the sum of all grants in a 64 KiB response cannot overflow.
+    private static let maxResets = 99
+
+    let usableResets: Int
+    let endsAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case paused
+        case resetsLeft = "resets_left"
+        case endsAt = "ends_at"
+        case usableNow = "usable_now"
+    }
+
+    init(from decoder: Decoder) throws {
+        do {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let left = try container.decode(Int.self, forKey: .resetsLeft)
+            let paused = try container.decodeIfPresent(Bool.self, forKey: .paused) ?? false
+            let usableNow = try container.decodeIfPresent(Bool.self, forKey: .usableNow) ?? false
+            endsAt = try container.decodeIfPresent(String.self, forKey: .endsAt).map(ClaudeUsageWindow.date)
+            usableResets = usableNow && !paused && (0 ... Self.maxResets).contains(left) ? left : 0
+        } catch {
+            usableResets = 0
+            endsAt = nil
+        }
+    }
+}
+
 private struct ClaudeUsageWindow: Decodable {
     let utilization: Double
     let resetsAt: String?
@@ -166,21 +236,17 @@ private struct ClaudeUsageWindow: Decodable {
 
     func window(id: String, title: String) throws -> QuotaWindow {
         guard utilization.isFinite, (0 ... 100).contains(utilization) else { throw QuotaError.invalidResponse }
-        let resetAt: Date?
-        if let resetsAt, !resetsAt.isEmpty {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let parsed = formatter.date(from: resetsAt) {
-                resetAt = parsed
-            } else {
-                formatter.formatOptions = [.withInternetDateTime]
-                guard let parsed = formatter.date(from: resetsAt) else { throw QuotaError.invalidResponse }
-                resetAt = parsed
-            }
-        } else {
-            resetAt = nil
-        }
+        let resetAt = try resetsAt.flatMap { $0.isEmpty ? nil : try Self.date($0) }
         return QuotaWindow(id: id, title: title, remainingPercent: 100 - utilization, resetAt: resetAt)
+    }
+
+    static func date(_ text: String) throws -> Date {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let parsed = formatter.date(from: text) { return parsed }
+        formatter.formatOptions = [.withInternetDateTime]
+        guard let parsed = formatter.date(from: text) else { throw QuotaError.invalidResponse }
+        return parsed
     }
 }
 
