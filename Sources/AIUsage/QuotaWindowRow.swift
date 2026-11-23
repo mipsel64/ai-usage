@@ -47,8 +47,7 @@ struct QuotaWindowRow: View {
             }
 
             ProgressView(value: window.remainingPercent, total: 100)
-                .progressViewStyle(.linear)
-                .controlSize(.small)
+                .progressViewStyle(QuotaBarStyle())
                 .tint(UsageVisuals.quotaColor(remaining: window.remainingPercent))
                 .animation(reduceMotion ? nil : .smooth, value: window.remainingPercent)
                 .accessibilityLabel("\(window.title) remaining quota")
