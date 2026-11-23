@@ -15,6 +15,8 @@ struct QuotaBarStyle: ProgressViewStyle {
                         .frame(width: proxy.size.width * fraction)
                 }
             }
+            // Below 6 pt the fill capsule has a smaller radius than the track, so its ends need the track's shape.
+            .clipShape(.capsule)
             .frame(height: 6)
     }
 }
