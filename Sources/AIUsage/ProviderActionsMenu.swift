@@ -4,10 +4,8 @@ import SwiftUI
 struct ProviderActionsMenu: View {
     let provider: QuotaProvider
     let canRefresh: Bool
-    let canRedeem: Bool
     let onRefresh: () -> Void
     let onShowPreferences: () -> Void
-    let onRedeem: () -> Void
 
     @Environment(\.openURL) private var openURL
 
@@ -17,12 +15,6 @@ struct ProviderActionsMenu: View {
                 .disabled(!canRefresh)
             Button("Open Usage Portal", systemImage: "arrow.up.right", action: openUsagePortal)
             Button("Show in Preferences…", systemImage: "gearshape", action: onShowPreferences)
-            if provider.supportsBankedReset {
-                Divider()
-                Button("Redeem Banked Reset…", systemImage: "arrow.uturn.backward", action: onRedeem)
-                    .disabled(!canRedeem)
-                    .help("Review and redeem one eligible banked reset.")
-            }
         }
         .labelStyle(.iconOnly)
         .menuStyle(.borderlessButton)

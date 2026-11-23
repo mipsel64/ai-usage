@@ -6,16 +6,11 @@ struct ProviderCard: View {
     let provider: QuotaProvider
     let state: ProviderState?
     let now: Date
-    let canRedeem: Bool
-    let resetResult: String?
-    let resetError: String?
     let onRefresh: () -> Void
     let onShowPreferences: () -> Void
-    let onRedeem: () -> Void
 
     private var hasBody: Bool {
-        state?.snapshot != nil || state?.message?.isEmpty == false ||
-            resetResult?.isEmpty == false || resetError?.isEmpty == false
+        state?.snapshot != nil || state?.message?.isEmpty == false
     }
 
     var body: some View {
@@ -24,18 +19,14 @@ struct ProviderCard: View {
                 provider: provider,
                 state: state,
                 now: now,
-                canRedeem: canRedeem,
                 onRefresh: onRefresh,
-                onShowPreferences: onShowPreferences,
-                onRedeem: onRedeem
+                onShowPreferences: onShowPreferences
             )
             if hasBody {
                 ProviderCardBody(
                     provider: provider,
                     state: state,
-                    now: now,
-                    resetResult: resetResult,
-                    resetError: resetError
+                    now: now
                 )
             }
         }

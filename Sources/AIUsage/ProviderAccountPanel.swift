@@ -91,6 +91,10 @@ struct ProviderAccountPanel: View {
                 )
             )
 
+            if state?.connected == true {
+                ResetCreditsSection(store: store, provider: provider, state: state)
+            }
+
             if provider.id == .claude {
                 ClaudeCodeVersionSection()
             }

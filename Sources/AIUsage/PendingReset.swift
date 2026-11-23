@@ -1,9 +1,9 @@
+import Foundation
 import QuotaCore
-import SwiftUI
 
 struct PendingReset {
     let provider: QuotaProvider
-    let creditID: String
-    let title: String?
-    let expiry: Date?
+    let option: ResetOption
+    /// The connection that the user confirmed for; see `UsageStore.connection(_:)`.
+    let connection: UUID?
 }

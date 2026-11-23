@@ -24,17 +24,55 @@ public struct QuotaWindow: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-public struct ResetCredits: Equatable, Codable, Sendable {
-    public let availableCount: Int
-    public let nextID: String?
-    public let nextTitle: String?
-    public let nextExpiry: Date?
+/// One kind of banked reset that the account can use now, for example "Full reset" or "Weekly reset card".
+public struct ResetOption: Codable, Equatable, Identifiable, Sendable {
+    /// The provider's credit ID that one redemption uses: the credit of this kind that expires first.
+    public let id: String
+    public let title: String
+    /// What one reset of this kind refills, when known.
+    public let detail: String?
+    /// Resets of this kind that can be used now.
+    public let count: Int
+    /// The earliest expiry of the resets of this kind; nil when none of them expires.
+    public let expiry: Date?
 
-    public init(availableCount: Int, nextID: String?, nextTitle: String?, nextExpiry: Date?) {
+    public init(id: String, title: String, detail: String?, count: Int, expiry: Date?) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        self.count = count
+        self.expiry = expiry
+    }
+
+    /// Groups the credits of one kind into one option that redeems the credit that expires first.
+    /// A credit with no expiry sorts after every dated credit. Returns nil when no credit has a positive count.
+    static func group(_ credits: [(id: String, count: Int, expiry: Date?)], title: String, detail: String?) -> ResetOption? {
+        let live = credits.filter { $0.count > 0 }
+        guard let first = live.min(by: { ($0.expiry ?? .distantFuture) < ($1.expiry ?? .distantFuture) }) else { return nil }
+        return ResetOption(id: first.id, title: title, detail: detail, count: live.reduce(0) { $0 + $1.count }, expiry: first.expiry)
+    }
+}
+
+public struct ResetCredits: Equatable, Codable, Sendable {
+    /// Banked resets that the provider reports as available; the menu badge shows this number.
+    public let availableCount: Int
+    /// The kinds of reset that the app can redeem, in display order. Empty when the provider reports no redeemable ID.
+    public let options: [ResetOption]
+
+    public init(availableCount: Int, options: [ResetOption] = []) {
         self.availableCount = availableCount
-        self.nextID = nextID
-        self.nextTitle = nextTitle
-        self.nextExpiry = nextExpiry
+        self.options = options
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case availableCount, options
+    }
+
+    /// A snapshot stored by an earlier version has no `options`; it decodes with none until the next reading.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        availableCount = try container.decode(Int.self, forKey: .availableCount)
+        options = try container.decodeIfPresent([ResetOption].self, forKey: .options) ?? []
     }
 }
 

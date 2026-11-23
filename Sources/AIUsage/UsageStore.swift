@@ -18,6 +18,11 @@ struct ActionError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+struct ResetOutcome: Equatable {
+    let message: String
+    let isError: Bool
+}
+
 @MainActor @Observable
 final class UsageStore {
     let providers: [QuotaProvider]
@@ -34,6 +39,8 @@ final class UsageStore {
     /// Start time of the last quota read, automatic or manual, for each provider's refresh interval.
     private var quotaReads: [ProviderID: Date] = [:]
     private var redeeming: Set<ProviderID> = []
+    /// The result of the last reset used from Preferences, kept here so that it stays when the pane changes.
+    private(set) var resetOutcomes: [ProviderID: ResetOutcome] = [:]
     private(set) var notificationsEnabled: Bool
     private(set) var notificationStatus: String = ""
 
@@ -138,6 +145,7 @@ final class UsageStore {
             defaults.set(1, forKey: "oauthVersion.\(id.rawValue)")
         }
         states[id] = ProviderState(connected: true, snapshot: firstReading, account: signInAccount)
+        resetOutcomes[id] = nil
         defaults.set(try JSONEncoder().encode(firstReading), forKey: "snapshot.\(id.rawValue)")
         startAccountRead(for: provider, access: connectionAccess, generation: connectedGeneration)
     }
@@ -154,6 +162,7 @@ final class UsageStore {
         accountTasks[id] = nil
         for prefix in ["connected", "path", "snapshot", "oauthVersion"] { defaults.removeObject(forKey: "\(prefix).\(id.rawValue)") }
         states[id] = ProviderState()
+        resetOutcomes[id] = nil
     }
 
     private func startAccountRead(for provider: QuotaProvider, access: ProviderAccess, generation: UUID?) {
@@ -248,17 +257,37 @@ final class UsageStore {
         }
     }
 
-    func redeemableCredit(_ id: ProviderID, at now: Date) -> ResetCredits? {
-        guard let state = states[id], state.connected, !state.loading, state.message == nil,
-              let snapshot = state.snapshot, (0..<150).contains(now.timeIntervalSince(snapshot.observedAt)),
-              let credits = snapshot.resetCredits, credits.availableCount > 0, credits.nextID != nil,
-              credits.nextExpiry.map({ $0 > now }) ?? true else { return nil }
-        return credits
+    /// The current connection of a provider. A confirmation keeps it, so that it cannot apply to a later sign-in.
+    func connection(_ id: ProviderID) -> UUID? { generations[id] }
+
+    /// Empty while any reset is in use, so only one reset runs at a time in the app.
+    func usableResets(_ id: ProviderID, at now: Date) -> [ResetOption] {
+        guard redeeming.isEmpty, let provider = providers.first(where: { $0.id == id }), case .banked = provider.reset,
+              let state = states[id], state.connected, !state.loading, state.message == nil,
+              let snapshot = state.snapshot,
+              (0..<(provider.refreshInterval + 90)).contains(now.timeIntervalSince(snapshot.observedAt)) else { return [] }
+        return snapshot.resetCredits?.options.filter {
+            $0.count > 0 && ($0.expiry.map { $0 > now } ?? true)
+        } ?? []
+    }
+
+    /// Uses one reset that the user confirmed for `connection`, and keeps the outcome in `resetOutcomes`.
+    func useReset(_ id: ProviderID, creditID: String, connection: UUID?) async {
+        guard connection == generations[id] else {
+            resetOutcomes[id] = ResetOutcome(message: "The connection changed after you confirmed. Nothing was used. Check the resets and try again.", isError: true)
+            return
+        }
+        resetOutcomes[id] = nil
+        do {
+            resetOutcomes[id] = ResetOutcome(message: try await redeemReset(id, creditID: creditID), isError: false)
+        } catch {
+            resetOutcomes[id] = ResetOutcome(message: connectionMessage(for: error), isError: true)
+        }
     }
 
     func redeemReset(_ id: ProviderID, creditID: String) async throws -> String {
         guard let provider = providers.first(where: { $0.id == id }), case let .banked(_, redeem) = provider.reset,
-              redeemableCredit(id, at: .now)?.nextID == creditID else {
+              usableResets(id, at: .now).contains(where: { $0.id == creditID }) else {
             throw ActionError("Refresh the quota and check that this reset is still available.")
         }
         redeeming.insert(id)
@@ -284,6 +313,7 @@ final class UsageStore {
         case .alreadyRedeemed: return "This reset was already redeemed."
         case .nothingToReset: return "The provider reports that no quota needs a reset."
         case .noCredit: return "The provider reports that no reset credit is available."
+        case .tryLater: return "The provider asks you to wait before you use another reset. Nothing was used."
         }
     }
 

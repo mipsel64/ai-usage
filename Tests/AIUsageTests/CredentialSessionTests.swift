@@ -493,7 +493,9 @@ struct CredentialSessionTests {
         let snapshot = QuotaSnapshot(
             windows: [.init(id: "week", title: "Weekly", remainingPercent: 0, resetAt: nil)],
             observedAt: .now,
-            resetCredits: ResetCredits(availableCount: 1, nextID: "credit", nextTitle: "Weekly reset", nextExpiry: nil)
+            resetCredits: ResetCredits(availableCount: 1, options: [
+                .init(id: "credit", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+            ])
         )
         return QuotaProvider(
             id: id, displayName: "OAuth", accountURL: account, connection: .oauth,
