@@ -84,8 +84,13 @@ struct QuotaBarTests {
         defer { window.close() }
         for (appearance, fill) in [(NSAppearance.Name.darkAqua, Swatch.white), (.aqua, .black), (.darkAqua, .white)] {
             window.appearance = NSAppearance(named: appearance)
-            RunLoop.main.run(until: .now + 0.3)
-            let pixel = try RenderedBar(layerOf: host).color(x: inset + barWidth / 4)
+            // The view redraws asynchronously after the change; poll for up to 3 s.
+            var pixel = NSColor.clear
+            for _ in 0..<60 {
+                RunLoop.main.run(until: .now + 0.05)
+                pixel = try RenderedBar(layerOf: host).color(x: inset + barWidth / 4)
+                if pixel.alphaComponent > 0.5 && fill.matches(pixel) { break }
+            }
             #expect(pixel.alphaComponent > 0.5 && fill.matches(pixel), "\(appearance.rawValue): \(pixel)")
         }
     }
