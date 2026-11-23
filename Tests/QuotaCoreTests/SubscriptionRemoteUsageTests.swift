@@ -16,9 +16,10 @@ struct SubscriptionRemoteUsageTests {
         let requests = await transport.requests
         let request = try #require(requests.first)
         #expect(requests.count == 1)
-        #expect(request.url?.absoluteString == "https://api.anthropic.com/api/oauth/usage")
+        #expect(request.url?.absoluteString == "https://api.anthropic.com/api/oauth/usage?cedar_ember=1")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer claude-access")
         #expect(request.value(forHTTPHeaderField: "anthropic-beta") == "oauth-2025-04-20")
+        #expect(request.value(forHTTPHeaderField: "User-Agent") == "claude-cli/2.1.330 (external, cli)")
         #expect(request.httpShouldHandleCookies == false)
         #expect(snapshot.observedAt == observedAt)
         #expect(snapshot.windows == [
@@ -26,6 +27,53 @@ struct SubscriptionRemoteUsageTests {
             QuotaWindow(id: "seven_day", title: "Weekly", remainingPercent: 40, resetAt: nil),
             QuotaWindow(id: "seven_day_sonnet", title: "Weekly Sonnet", remainingPercent: 87.5, resetAt: Date(timeIntervalSince1970: 1_800_000_000)),
         ])
+        #expect(snapshot.resetCredits == nil)
+    }
+
+    @Test func claudeCountsLimitResetsUsableNow() async throws {
+        let body = #"{"seven_day":{"utilization":15,"resets_at":null},"cedar_ember":{"eligible":true,"ineligible_reason":null,"grants":[{"id":"launch-2610-fable-6mo","resets_left":99,"ends_at":"2027-03-09T07:59:00+00:00","paused":false,"usable_now":true,"type":"full","gives_back_weekly":true},{"id":"launch-2610-fable","resets_left":0,"ends_at":"2027-03-09T07:59:00+00:00","paused":false,"usable_now":false,"gives_back_weekly":true},{"id":"full-reset-2611","resets_left":1,"ends_at":"2027-02-10T22:00:00.000+00:00","paused":false,"usable_now":true,"type":"full","gives_back_weekly":false}],"next_grant_id":"full-reset-2611"}}"#
+        let snapshot = try await fetchClaude(body)
+
+        #expect(snapshot.windows.map(\.id) == ["seven_day"])
+        #expect(snapshot.resetCredits == ResetCredits(
+            availableCount: 100, nextID: nil, nextTitle: nil, nextExpiry: Date(timeIntervalSince1970: 1_802_296_800)
+        ))
+    }
+
+    @Test(arguments: [
+        #"{"resets_left":1,"usable_now":true,"paused":true}"#,
+        #"{"resets_left":1,"usable_now":false}"#,
+        #"{"resets_left":1}"#,
+        #"{"resets_left":1,"usable_now":true,"ends_at":"2027-01-15T08:01:40Z"}"#,
+        #"{"resets_left":1,"usable_now":true,"ends_at":"soon"}"#,
+        #"{"resets_left":1,"usable_now":true,"ends_at":""}"#,
+        #"{"resets_left":-1,"usable_now":true}"#,
+        #"{"resets_left":100,"usable_now":true}"#,
+        #"{"resets_left":"1","usable_now":true}"#,
+        #"{"resets_left":1,"usable_now":"yes"}"#,
+        "42",
+        "null",
+    ])
+    func claudeSkipsLimitResetItCannotUseNow(grant: String) async throws {
+        let body = #"{"seven_day":{"utilization":15,"resets_at":null},"cedar_ember":{"eligible":true,"grants":["# + grant + #",{"resets_left":1,"usable_now":true,"ends_at":null}]}}"#
+        let snapshot = try await fetchClaude(body)
+
+        #expect(snapshot.resetCredits == ResetCredits(availableCount: 1, nextID: nil, nextTitle: nil, nextExpiry: nil))
+    }
+
+    @Test(arguments: [
+        #""cedar_ember":null"#,
+        #""cedar_ember":"soon""#,
+        #""cedar_ember":[]"#,
+        #""cedar_ember":{"eligible":false,"ineligible_reason":"cli_version","grants":[{"resets_left":1,"usable_now":true}]}"#,
+        #""cedar_ember":{"eligible":"yes","grants":[{"resets_left":1,"usable_now":true}]}"#,
+        #""cedar_ember":{"eligible":true,"grants":"soon"}"#,
+    ])
+    func claudeKeepsWindowsWhenResetInventoryIsUnreadable(inventory: String) async throws {
+        let snapshot = try await fetchClaude(#"{"seven_day":{"utilization":15,"resets_at":null},"# + inventory + "}")
+
+        #expect(snapshot.windows.map(\.id) == ["seven_day"])
+        #expect((snapshot.resetCredits?.availableCount ?? 0) == 0)
     }
 
     @Test func claudeAddsModelScopedWeeklyLimitsAfterFlatWindows() async throws {
