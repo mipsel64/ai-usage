@@ -283,7 +283,7 @@ struct RemoteUsageTests {
         ])
 
         let outcome = try await RemoteUsage.redeemZaiReset(
-            credential: "test-key",
+            credential: "  test-key  ",
             recordID: "42",
             requestID: "request-1",
             transport: transport,
@@ -295,6 +295,7 @@ struct RemoteUsageTests {
         #expect(requests.count == 2)
         #expect(requests[0].url?.absoluteString == "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL")
         #expect(requests[0].httpMethod == "GET")
+        #expect(requests[0].value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
         #expect(requests[1].url?.absoluteString == "https://api.z.ai/api/biz/customer-package-reset/use")
         #expect(requests[1].httpMethod == "POST")
         #expect(requests[1].value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
@@ -302,6 +303,31 @@ struct RemoteUsageTests {
         #expect(requests[1].value(forHTTPHeaderField: "Accept") == "application/json")
         #expect(!requests[1].httpShouldHandleCookies)
         #expect(requests[1].httpBody.map { String(decoding: $0, as: UTF8.self) } == #"{"grantType":"gift","recordId":42,"requestId":"request-1","resetType":"FIVE_HOUR","targetType":"PERSONAL"}"#)
+    }
+
+    @Test func zaiRedeemPostsWeeklyResetType() async throws {
+        let transport = QueuedRemoteUsageTransport(responses: [
+            .success(.init(statusCode: 200, body: Data(#"{"code":200,"success":true,"data":{"fiveHourResets":[],"weekResets":[{"available":true,"expireTime":"2027-01-16 00:00:00","recordId":42,"grantType":"weekly-gift"}]}}"#.utf8))),
+            .success(.init(statusCode: 200, body: Data(#"{"success":true}"#.utf8))),
+        ])
+
+        let outcome = try await RemoteUsage.redeemZaiReset(
+            credential: "test-key",
+            recordID: "42",
+            requestID: "request-1",
+            transport: transport,
+            observedAt: observedAt
+        )
+
+        #expect(redemptionName(outcome) == "reset")
+        let requests = await transport.requests
+        try #require(requests.count == 2)
+        #expect(requests[1].httpMethod == "POST")
+        let body = try #require(requests[1].httpBody)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["resetType"] as? String == "WEEK")
+        #expect(json["grantType"] as? String == "weekly-gift")
+        #expect(json["recordId"] as? Int == 42)
     }
 
     @Test(arguments: [
@@ -327,6 +353,24 @@ struct RemoteUsageTests {
         #expect(await transport.requests.count == 1)
     }
 
+    @Test func zaiRedeemRefusesCardThatIsNoLongerEarliest() async throws {
+        let body = #"{"code":200,"success":true,"data":{"fiveHourResets":[{"available":true,"expireTime":"2027-01-16 00:00:00","recordId":42,"grantType":"gift"},{"available":true,"expireTime":"2027-01-15 23:00:00","recordId":43,"grantType":"gift"}],"weekResets":[]}}"#
+        let transport = QueuedRemoteUsageTransport(responses: [
+            .success(.init(statusCode: 200, body: Data(body.utf8))),
+        ])
+
+        let outcome = try await RemoteUsage.redeemZaiReset(
+            credential: "test-key",
+            recordID: "42",
+            requestID: "request-1",
+            transport: transport,
+            observedAt: observedAt
+        )
+
+        #expect(redemptionName(outcome) == "noCredit")
+        #expect(await transport.requests.map(\.httpMethod) == ["GET"])
+    }
+
     @Test func zaiRedeemRejectsUnconfirmedResponse() async {
         let transport = QueuedRemoteUsageTransport(responses: [
             .success(.init(statusCode: 200, body: Data(#"{"code":200,"success":true,"data":{"fiveHourResets":[{"available":true,"recordId":42,"grantType":"gift"}],"weekResets":[]}}"#.utf8))),
@@ -344,7 +388,7 @@ struct RemoteUsageTests {
         }
     }
 
-    @Test(arguments: ["", "abc", "-1", "0", "1.0", "１２"])
+    @Test(arguments: ["", "abc", "-1", "0", "007", "1.0", "１２"])
     func zaiRedeemRejectsInvalidRecordIDBeforeRequests(recordID: String) async {
         let transport = QueuedRemoteUsageTransport(responses: [])
 
@@ -357,6 +401,58 @@ struct RemoteUsageTests {
             )
         }
         #expect(await transport.requests.isEmpty)
+    }
+
+    @Test(arguments: ["bad\nkey", "  "])
+    func zaiRedeemRejectsInvalidCredentialBeforeRequests(credential: String) async {
+        let transport = QueuedRemoteUsageTransport(responses: [])
+
+        await #expect(throws: QuotaError.notConfigured) {
+            _ = try await RemoteUsage.redeemZaiReset(
+                credential: credential,
+                recordID: "42",
+                requestID: "request-1",
+                transport: transport
+            )
+        }
+        #expect(await transport.requests.isEmpty)
+    }
+
+    @Test(arguments: ["", String(repeating: "a", count: 257), "bad\nrequest"])
+    func zaiRedeemRejectsInvalidRequestIDBeforeRequests(requestID: String) async {
+        let transport = QueuedRemoteUsageTransport(responses: [])
+
+        await #expect(throws: QuotaError.notConfigured) {
+            _ = try await RemoteUsage.redeemZaiReset(
+                credential: "test-key",
+                recordID: "42",
+                requestID: requestID,
+                transport: transport
+            )
+        }
+        #expect(await transport.requests.isEmpty)
+    }
+
+    @Test(arguments: [
+        (500, "", QuotaError.unavailable),
+        (200, #"{"code":500,"success":false}"#, QuotaError.invalidResponse),
+        (200, #"{"code":500,"success":true,"data":{"fiveHourResets":[{"available":true,"recordId":42,"grantType":"gift"}],"weekResets":[]}}"#, QuotaError.invalidResponse),
+        (200, #"{"code":200,"success":false,"data":{"fiveHourResets":[{"available":true,"recordId":42,"grantType":"gift"}],"weekResets":[]}}"#, QuotaError.invalidResponse),
+    ])
+    func zaiRedeemPropagatesListFailureWithoutPost(status: Int, body: String, expected: QuotaError) async {
+        let transport = QueuedRemoteUsageTransport(responses: [
+            .success(.init(statusCode: status, body: Data(body.utf8))),
+        ])
+
+        await #expect(throws: expected) {
+            _ = try await RemoteUsage.redeemZaiReset(
+                credential: "test-key",
+                recordID: "42",
+                requestID: "request-1",
+                transport: transport
+            )
+        }
+        #expect(await transport.requests.map(\.httpMethod) == ["GET"])
     }
 
     @Test func zaiResetReadIsBestEffort() async throws {

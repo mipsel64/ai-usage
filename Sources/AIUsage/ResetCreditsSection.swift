@@ -11,9 +11,6 @@ struct ResetCreditsSection: View {
     let state: ProviderState?
 
     @ViewState private var pendingReset: PendingReset?
-    @ViewState private var isUsingReset = false
-    @ViewState private var result: String?
-    @ViewState private var error: String?
 
     var body: some View {
         Section {
@@ -73,17 +70,18 @@ struct ResetCreditsSection: View {
             }
         }
 
-        if let result, !result.isEmpty {
-            Text(result)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        if let error, !error.isEmpty {
-            Label(error, systemImage: "exclamationmark.circle")
-                .font(.caption)
-                .foregroundStyle(.red)
-                .fixedSize(horizontal: false, vertical: true)
+        if let outcome = store.resetOutcomes[provider.id] {
+            if outcome.isError {
+                Label(outcome.message, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(outcome.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -117,7 +115,7 @@ struct ResetCreditsSection: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(!usable || isUsingReset)
+        .disabled(!usable)
         .accessibilityLabel("Use one \(option.title)")
 
         if staleSnapshot(at: now) {
@@ -139,10 +137,8 @@ struct ResetCreditsSection: View {
     }
 
     private func presentConfirmation(for option: ResetOption) {
-        guard !isUsingReset, store.usableResets(provider.id, at: .now).contains(where: { $0.id == option.id }) else { return }
-        result = nil
-        error = nil
-        pendingReset = PendingReset(provider: provider, option: option)
+        guard store.usableResets(provider.id, at: .now).contains(where: { $0.id == option.id }) else { return }
+        pendingReset = PendingReset(provider: provider, option: option, connection: store.connection(provider.id))
     }
 
     private var confirmationTitle: String {
@@ -165,16 +161,6 @@ struct ResetCreditsSection: View {
     }
 
     private func useReset(_ pending: PendingReset) async {
-        guard !isUsingReset else { return }
-        isUsingReset = true
-        result = nil
-        error = nil
-        defer { isUsingReset = false }
-
-        do {
-            result = try await store.redeemReset(pending.provider.id, creditID: pending.option.id)
-        } catch {
-            self.error = connectionMessage(for: error)
-        }
+        await store.useReset(pending.provider.id, creditID: pending.option.id, connection: pending.connection)
     }
 }

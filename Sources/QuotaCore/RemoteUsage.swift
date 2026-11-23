@@ -96,14 +96,17 @@ public enum RemoteUsage {
         transport: RemoteUsageTransport,
         observedAt: Date? = nil
     ) async throws -> Redemption {
-        guard !credential.isEmpty,
+        let key = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty,
+              key.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),
               recordID.wholeMatch(of: #/^[0-9]+$/#) != nil,
               let numericRecordID = Int(recordID), numericRecordID > 0,
+              String(numericRecordID) == recordID,
               (1 ... 256).contains(requestID.count),
               requestID.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
         else { throw QuotaError.notConfigured }
 
-        let inventory = try await readZaiResetInventory(credential: credential, transport: transport)
+        let inventory = try await readZaiResetInventory(credential: key, transport: transport)
         let now = observedAt ?? Date()
         var selected: (card: ZaiResetCard, resetType: String)?
         for (cards, resetType) in [(inventory.fiveHourResets, "FIVE_HOUR"), (inventory.weekResets, "WEEK")] {
@@ -116,14 +119,16 @@ public enum RemoteUsage {
                 break
             }
         }
-        guard let selected, let grantType = selected.card.grantType else { return .noCredit }
+        guard let selected, let grantType = selected.card.grantType,
+              zaiResetCredits(inventory, observedAt: now).options.contains(where: { $0.id == recordID })
+        else { return .noCredit }
 
         var request = URLRequest(url: zaiUseResetURL)
         request.httpMethod = "POST"
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpShouldHandleCookies = false
         request.timeoutInterval = 10
-        request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         do {

@@ -219,6 +219,62 @@ struct ProviderLifecycleTests {
         #expect(store.usableResets(id, at: .now).isEmpty)
     }
 
+    @Test func useResetRefusesAConfirmationForAnEarlierConnection() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let attempts = ResetAttempts()
+        let option = ResetOption(id: "credit", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+        let provider = resetProvider(resetSnapshot([option], at: .now), reset: .banked(website: account) { _, credit, key in
+            await attempts.record(credit, key)
+            return .reset
+        })
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+        try await store.connect(id, secret: "first")
+        let confirmed = store.connection(id)
+        try await store.connect(id, secret: "second")
+
+        await store.useReset(id, creditID: "credit", connection: confirmed)
+        #expect(await attempts.credits.isEmpty)
+        #expect(store.resetOutcomes[id]?.isError == true)
+
+        await store.useReset(id, creditID: "credit", connection: store.connection(id))
+        #expect(await attempts.credits == ["credit"])
+        #expect(store.resetOutcomes[id] == ResetOutcome(message: "The provider confirmed the reset.", isError: false))
+    }
+
+    @Test func onlyOneResetRunsAtATimeAcrossProviders() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let other = ProviderID(rawValue: "other-reset-provider")
+        let option = ResetOption(id: "credit", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+        let snapshot = resetSnapshot([option], at: .now)
+        let gate = RedeemGate()
+        let otherAttempts = ResetAttempts()
+        let first = resetProvider(snapshot, reset: .banked(website: account) { _, _, _ in
+            await gate.enterAndWait()
+            return .reset
+        })
+        let second = QuotaProvider(id: other, displayName: "Other", accountURL: account, connection: .apiKey,
+                                   reset: .banked(website: account) { _, credit, key in
+                                       await otherAttempts.record(credit, key)
+                                       return .reset
+                                   }) { _ in snapshot }
+        let store = UsageStore(providers: [first, second], defaults: defaults, vault: RecordingCredentialVault())
+        try await store.connect(id, secret: "secret")
+        try await store.connect(other, secret: "secret")
+
+        let running = Task { await store.useReset(id, creditID: "credit", connection: store.connection(id)) }
+        await gate.waitUntilEntered()
+        #expect(store.usableResets(other, at: .now).isEmpty)
+        await #expect(throws: ActionError.self) { try await store.redeemReset(other, creditID: "credit") }
+        #expect(await otherAttempts.credits.isEmpty)
+
+        await gate.open()
+        await running.value
+        #expect(store.resetOutcomes[id]?.isError == false)
+        #expect(store.usableResets(other, at: .now) == [option])
+    }
+
     @Test func redeemResetRejectsAnIDThatIsNotAUsableOptionWithoutCallingProvider() async throws {
         let (defaults, suite) = preferences()
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -510,5 +566,32 @@ private actor BlockingResetSource {
         blocked = false
         readers.forEach { $0.resume() }
         readers = []
+    }
+}
+
+/// A redeem closure that waits in `enterAndWait()` until `open()`.
+private actor RedeemGate {
+    private var entered = false
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var watchers: [CheckedContinuation<Void, Never>] = []
+
+    func enterAndWait() async {
+        entered = true
+        watchers.forEach { $0.resume() }
+        watchers = []
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { watchers.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiting.forEach { $0.resume() }
+        waiting = []
     }
 }

@@ -57,16 +57,18 @@ struct SubscriptionRemoteUsageTests {
     }
 
     @Test(arguments: [
-        #"{"resets_left":1,"usable_now":true,"paused":true}"#,
-        #"{"resets_left":1,"usable_now":false}"#,
-        #"{"resets_left":1}"#,
-        #"{"resets_left":1,"usable_now":true,"ends_at":"2027-01-15T08:01:40Z"}"#,
-        #"{"resets_left":1,"usable_now":true,"ends_at":"soon"}"#,
-        #"{"resets_left":1,"usable_now":true,"ends_at":""}"#,
-        #"{"resets_left":-1,"usable_now":true}"#,
-        #"{"resets_left":100,"usable_now":true}"#,
-        #"{"resets_left":"1","usable_now":true}"#,
-        #"{"resets_left":1,"usable_now":"yes"}"#,
+        #"{"id":"g1","resets_left":1,"usable_now":true,"paused":true}"#,
+        #"{"id":"g1","resets_left":1,"usable_now":false}"#,
+        #"{"id":"g1","resets_left":1}"#,
+        #"{"id":"g1","resets_left":1,"usable_now":true,"ends_at":"2027-01-15T08:01:40Z"}"#,
+        #"{"id":"g1","resets_left":1,"usable_now":true,"ends_at":"soon"}"#,
+        #"{"id":"g1","resets_left":1,"usable_now":true,"ends_at":""}"#,
+        #"{"id":"g1","resets_left":-1,"usable_now":true}"#,
+        #"{"id":"g1","resets_left":100,"usable_now":true}"#,
+        #"{"id":"g1","resets_left":"1","usable_now":true}"#,
+        #"{"id":"g1","resets_left":1,"usable_now":"yes"}"#,
+        #"{"resets_left":1,"usable_now":true}"#,
+        #"{"id":"BAD","resets_left":1,"usable_now":true}"#,
         "42",
         "null",
     ])
@@ -298,6 +300,33 @@ struct SubscriptionRemoteUsageTests {
                 tokens: claudeTokens, grantID: "grant", requestID: "request", transport: transport
             )
         }
+    }
+
+    @Test func claudeRedeemMapsProfileAuthenticationFailureWithoutPost() async {
+        let transport = QueuedSubscriptionTransport(responses: [
+            .success(.init(statusCode: 403, body: Data())),
+        ])
+
+        await #expect(throws: QuotaError.unauthorized) {
+            _ = try await ClaudeRemoteUsage.redeem(
+                tokens: claudeTokens, grantID: "grant", requestID: "request", transport: transport
+            )
+        }
+        #expect(await transport.requests.map(\.httpMethod) == ["GET"])
+    }
+
+    @Test func claudeRedeemMapsPostRateLimit() async {
+        let transport = QueuedSubscriptionTransport(responses: [
+            .success(.init(statusCode: 200, body: Data(#"{"organization":{"uuid":"123e4567-e89b-12d3-a456-426614174000"}}"#.utf8))),
+            .success(.init(statusCode: 429, body: Data())),
+        ])
+
+        await #expect(throws: QuotaError.rateLimited) {
+            _ = try await ClaudeRemoteUsage.redeem(
+                tokens: claudeTokens, grantID: "grant", requestID: "request", transport: transport
+            )
+        }
+        #expect(await transport.requests.map(\.httpMethod) == ["GET", "POST"])
     }
 
     private func redemptionName(_ redemption: Redemption) -> String {
