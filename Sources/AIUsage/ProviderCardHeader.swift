@@ -6,10 +6,8 @@ struct ProviderCardHeader: View {
     let provider: QuotaProvider
     let state: ProviderState?
     let now: Date
-    let canRedeem: Bool
     let onRefresh: () -> Void
     let onShowPreferences: () -> Void
-    let onRedeem: () -> Void
 
     private var hasConnectedStatus: Bool {
         guard state?.message?.isEmpty != false, let snapshot = state?.snapshot else { return false }
@@ -37,10 +35,8 @@ struct ProviderCardHeader: View {
             ProviderActionsMenu(
                 provider: provider,
                 canRefresh: state?.loading != true,
-                canRedeem: canRedeem,
                 onRefresh: onRefresh,
-                onShowPreferences: onShowPreferences,
-                onRedeem: onRedeem
+                onShowPreferences: onShowPreferences
             )
         }
         .frame(minHeight: 24)

@@ -28,11 +28,15 @@ public enum ProviderAccess: Sendable {
     }
 }
 
-public enum Redemption: Sendable { case reset, alreadyRedeemed, nothingToReset, noCredit }
+public enum Redemption: Sendable {
+    case reset, alreadyRedeemed, nothingToReset, noCredit
+    /// The provider refused for now, for example during a cooldown. Nothing was used.
+    case tryLater
+}
 
 public enum ResetAction: Sendable {
     case automaticOnly
-    case website(URL)
+    /// `redeem(access, creditID, idempotencyKey)` uses one reset; `creditID` is a `ResetOption.id`.
     case banked(website: URL, redeem: @Sendable (ProviderAccess, String, String) async throws -> Redemption)
 }
 
@@ -64,13 +68,8 @@ public struct QuotaProvider: Identifiable, Sendable {
     public var resetURL: URL? {
         switch reset {
         case .automaticOnly: nil
-        case let .website(url), let .banked(url, _): url
+        case let .banked(url, _): url
         }
-    }
-
-    public var supportsBankedReset: Bool {
-        if case .banked = reset { return true }
-        return false
     }
 }
 
@@ -82,7 +81,10 @@ public enum ProviderCatalog {
     public static let all: [QuotaProvider] = [
         // /api/oauth/usage allows about one read per 2 minutes per token; a 60 s poll got HTTP 429 on 4 reads in 10.
         QuotaProvider(id: .claude, displayName: "Claude", accountURL: claudeUsage,
-                      connection: .oauth, reset: .website(claudeUsage), refreshInterval: 180, readAccount: {
+                      connection: .oauth,
+                      reset: .banked(website: claudeUsage) { access, id, key in
+                          try await ClaudeRemoteUsage.redeem(tokens: access.oauthTokens(), grantID: id, requestID: key)
+                      }, refreshInterval: 180, readAccount: {
                           guard case let .oauth(tokens) = $0 else { return nil }
                           return try? await ClaudeAccountIdentity.fetch(tokens: tokens)
                       }) {
@@ -101,7 +103,10 @@ public enum ProviderCatalog {
                           return CodexAccountIdentity.decode(tokens: tokens)
                       }) { try await CodexRemoteUsage.fetch(tokens: $0.oauthTokens()) },
         QuotaProvider(id: .zai, displayName: "Z.ai", accountURL: zaiUsage,
-                      connection: .browserLogin, reset: .website(zaiUsage), readAccount: {
+                      connection: .browserLogin,
+                      reset: .banked(website: zaiUsage) { access, id, key in
+                          try await RemoteUsage.redeemZaiReset(credential: access.key(), recordID: id, requestID: key)
+                      }, readAccount: {
                           guard case let .apiKey(key) = $0 else { return nil }
                           return try? await ZaiAccountIdentity.fetchSubscription(key: key)
                       }) {

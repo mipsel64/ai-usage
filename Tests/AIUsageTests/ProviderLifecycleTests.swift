@@ -79,7 +79,9 @@ struct ProviderLifecycleTests {
             throw QuotaError.unavailable
         }) { _ in
             QuotaSnapshot(windows: [.init(id: "week", title: "Weekly", remainingPercent: 10, resetAt: nil)], observedAt: .now,
-                          resetCredits: .init(availableCount: 1, nextID: "earned-1", nextTitle: nil, nextExpiry: nil))
+                          resetCredits: .init(availableCount: 1, options: [
+                              .init(id: "earned-1", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+                          ]))
         }
         let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
         try await store.connect(id, secret: "secret")
@@ -116,7 +118,9 @@ struct ProviderLifecycleTests {
         let snapshot = QuotaSnapshot(
             windows: [.init(id: "week", title: "Weekly", remainingPercent: 0, resetAt: nil)],
             observedAt: .now,
-            resetCredits: ResetCredits(availableCount: 1, nextID: "credit", nextTitle: "Weekly reset", nextExpiry: nil)
+            resetCredits: ResetCredits(availableCount: 1, options: [
+                .init(id: "credit", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+            ])
         )
         let provider = QuotaProvider(
             id: id,
@@ -133,6 +137,138 @@ struct ProviderLifecycleTests {
 
         #expect(result == "The provider confirmed the reset.")
         #expect(vault.readInteractions == [true])
+    }
+
+    @Test func usableResetsAccepts140SecondsAndRejects160SecondsForSixtySecondProvider() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let option = ResetOption(id: "credit", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+        let snapshot = resetSnapshot([option], at: observedAt)
+        let provider = resetProvider(snapshot, reset: .banked(website: account) { _, _, _ in .reset })
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+        try await store.connect(id, secret: "secret")
+
+        #expect(store.usableResets(id, at: observedAt.addingTimeInterval(140)) == [option])
+        #expect(store.usableResets(id, at: observedAt.addingTimeInterval(160)).isEmpty)
+    }
+
+    @Test func usableResetsAccepts260SecondsAndRejects280SecondsFor180SecondProvider() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let option = ResetOption(id: "credit", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+        let snapshot = resetSnapshot([option], at: observedAt)
+        let provider = resetProvider(snapshot, reset: .banked(website: account) { _, _, _ in .reset }, refreshInterval: 180)
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+        try await store.connect(id, secret: "secret")
+
+        #expect(store.usableResets(id, at: observedAt.addingTimeInterval(260)) == [option])
+        #expect(store.usableResets(id, at: observedAt.addingTimeInterval(280)).isEmpty)
+    }
+
+    @Test func usableResetsExcludesExpiredAndZeroCountOptions() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date()
+        let live = ResetOption(id: "live", title: "Live", detail: nil, count: 2, expiry: now.addingTimeInterval(60))
+        let expired = ResetOption(id: "expired", title: "Expired", detail: nil, count: 1, expiry: now)
+        let empty = ResetOption(id: "empty", title: "Empty", detail: nil, count: 0, expiry: nil)
+        let provider = resetProvider(resetSnapshot([live, expired, empty], at: now), reset: .banked(website: account) { _, _, _ in .reset })
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+        try await store.connect(id, secret: "secret")
+
+        #expect(store.usableResets(id, at: now) == [live])
+    }
+
+    @Test func automaticOnlyProviderHasNoUsableResets() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date()
+        let option = ResetOption(id: "credit", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+        let provider = resetProvider(resetSnapshot([option], at: now), reset: .automaticOnly)
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+        try await store.connect(id, secret: "secret")
+
+        #expect(store.usableResets(id, at: now).isEmpty)
+    }
+
+    @Test func loadingOrProviderMessageMakesResetsUnusable() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let option = ResetOption(id: "credit", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+        let source = BlockingResetSource(resetSnapshot([option], at: .now))
+        let provider = QuotaProvider(id: id, displayName: "Plan", accountURL: account, connection: .apiKey,
+                                     reset: .banked(website: account) { _, _, _ in .reset }) { _ in try await source.read() }
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+        try await store.connect(id, secret: "secret")
+        #expect(store.usableResets(id, at: .now) == [option])
+
+        await source.block()
+        let refresh = Task { await store.refresh(id) }
+        await source.waitForReader()
+        #expect(store.states[id]?.loading == true)
+        #expect(store.usableResets(id, at: .now).isEmpty)
+        await source.release()
+        await refresh.value
+        #expect(store.usableResets(id, at: .now) == [option])
+
+        await source.fail(with: .unavailable)
+        await store.refresh(id)
+        #expect(store.states[id]?.message != nil)
+        #expect(store.usableResets(id, at: .now).isEmpty)
+    }
+
+    @Test func redeemResetRejectsAnIDThatIsNotAUsableOptionWithoutCallingProvider() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let attempts = ResetAttempts()
+        let option = ResetOption(id: "earned-1", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+        let provider = resetProvider(resetSnapshot([option], at: .now), reset: .banked(website: account) { _, credit, key in
+            await attempts.record(credit, key)
+            return .reset
+        })
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+        try await store.connect(id, secret: "secret")
+
+        await #expect(throws: ActionError.self) { try await store.redeemReset(id, creditID: "different") }
+        #expect(await attempts.credits.isEmpty)
+    }
+
+    @Test func tryLaterReturnsExplanationAndRemovesTheIntentKey() async throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let option = ResetOption(id: "credit", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+        let provider = resetProvider(resetSnapshot([option], at: .now), reset: .banked(website: account) { _, _, _ in .tryLater })
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+        try await store.connect(id, secret: "secret")
+
+        let result = try await store.redeemReset(id, creditID: "credit")
+
+        #expect(result == "The provider asks you to wait before you use another reset. Nothing was used.")
+        #expect(defaults.object(forKey: "intent.\(id.rawValue).credit") == nil)
+    }
+
+    @Test func storedSnapshotWithLegacyResetCreditsDecodesWithNoOptions() throws {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let option = ResetOption(id: "credit", title: "Weekly reset", detail: nil, count: 1, expiry: nil)
+        let snapshot = resetSnapshot([option], at: .now)
+        let encoded = try JSONEncoder().encode(snapshot)
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["resetCredits"] = [
+            "availableCount": 1,
+            "nextID": "x",
+            "nextTitle": NSNull(),
+            "nextExpiry": NSNull()
+        ]
+        defaults.set(true, forKey: "connected.\(id.rawValue)")
+        defaults.set(try JSONSerialization.data(withJSONObject: object), forKey: "snapshot.\(id.rawValue)")
+        let provider = resetProvider(snapshot, reset: .banked(website: account) { _, _, _ in .reset })
+
+        let store = UsageStore(providers: [provider], defaults: defaults, vault: RecordingCredentialVault())
+
+        #expect(store.states[id]?.snapshot?.resetCredits == ResetCredits(availableCount: 1, options: []))
     }
 
     @Test func failedAutomaticKeychainReadKeepsLastGoodQuota() async throws {
@@ -262,6 +398,25 @@ struct ProviderLifecycleTests {
         #expect(store.quotaReadDue(provider, at: clock.now.addingTimeInterval(180)))
     }
 
+    private func resetSnapshot(_ options: [ResetOption], at observedAt: Date) -> QuotaSnapshot {
+        QuotaSnapshot(
+            windows: [.init(id: "week", title: "Weekly", remainingPercent: 0, resetAt: nil)],
+            observedAt: observedAt,
+            resetCredits: ResetCredits(availableCount: options.reduce(0) { $0 + $1.count }, options: options)
+        )
+    }
+
+    private func resetProvider(
+        _ snapshot: QuotaSnapshot,
+        reset: ResetAction,
+        refreshInterval: TimeInterval = 60
+    ) -> QuotaProvider {
+        QuotaProvider(
+            id: id, displayName: "Plan", accountURL: account, connection: .apiKey,
+            reset: reset, refreshInterval: refreshInterval
+        ) { _ in snapshot }
+    }
+
     private func preferences() -> (UserDefaults, String) {
         let suite = "AIUsage.Tests.\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)
@@ -321,4 +476,39 @@ private actor ResetAttempts {
     var credits: [String] = []
     var keys: [String] = []
     func record(_ credit: String, _ key: String) { credits.append(credit); keys.append(key) }
+}
+
+/// Returns a fixed snapshot; while blocked, each read waits until `release()`.
+private actor BlockingResetSource {
+    let snapshot: QuotaSnapshot
+    private var blocked = false
+    private var failure: QuotaError?
+    private var readers: [CheckedContinuation<Void, Never>] = []
+    private var watchers: [CheckedContinuation<Void, Never>] = []
+
+    init(_ snapshot: QuotaSnapshot) { self.snapshot = snapshot }
+
+    func read() async throws -> QuotaSnapshot {
+        if blocked {
+            watchers.forEach { $0.resume() }
+            watchers = []
+            await withCheckedContinuation { readers.append($0) }
+        }
+        if let failure { throw failure }
+        return snapshot
+    }
+
+    func block() { blocked = true }
+    func fail(with error: QuotaError) { failure = error }
+
+    func waitForReader() async {
+        guard readers.isEmpty else { return }
+        await withCheckedContinuation { watchers.append($0) }
+    }
+
+    func release() {
+        blocked = false
+        readers.forEach { $0.resume() }
+        readers = []
+    }
 }

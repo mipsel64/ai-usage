@@ -370,13 +370,12 @@ private struct CodexRateLimitsResponse: Decodable {
                 && $0.resetType == "codexRateLimits"
                 && ($0.expiresAt.map { $0.isFinite && $0 > now } ?? true)
         }
-        let next = eligible.first
-        let expiry = next?.expiresAt.map { Date(timeIntervalSince1970: $0) }
+        let options = codexResetOptions(eligible.map {
+            ($0.id, $0.title, $0.expiresAt.map { Date(timeIntervalSince1970: $0) })
+        })
         let summary = ResetCredits(
             availableCount: rateLimitResetCredits.availableCount,
-            nextID: next?.id,
-            nextTitle: next?.title,
-            nextExpiry: expiry
+            options: options
         )
         return CodexEligibleCredits(
             summary: summary,
@@ -454,6 +453,21 @@ func windowLengthLabel(seconds: Double?) -> String? {
 private struct CodexResetCreditsSummary: Decodable {
     let availableCount: Int
     let credits: [CodexResetCredit]?
+}
+
+func codexResetOptions(_ credits: [(id: String, title: String?, expiry: Date?)]) -> [ResetOption] {
+    var groups: [(title: String, credits: [(id: String, count: Int, expiry: Date?)])] = []
+    var indices: [String: Int] = [:]
+    for credit in credits {
+        let title = credit.title.flatMap { $0.isEmpty ? nil : $0 } ?? "Banked reset"
+        if let index = indices[title] {
+            groups[index].credits.append((credit.id, 1, credit.expiry))
+        } else {
+            indices[title] = groups.count
+            groups.append((title, [(credit.id, 1, credit.expiry)]))
+        }
+    }
+    return groups.compactMap { ResetOption.group($0.credits, title: $0.title, detail: nil) }
 }
 
 private struct CodexResetCredit: Decodable {

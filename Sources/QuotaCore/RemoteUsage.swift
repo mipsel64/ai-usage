@@ -6,6 +6,7 @@ public enum RemoteUsage {
     private static let zaiResetURL = URL(
         string: "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL"
     )!
+    private static let zaiUseResetURL = URL(string: "https://api.z.ai/api/biz/customer-package-reset/use")!
     private static let kimiURL = URL(string: "https://api.kimi.com/coding/v1/usages")!
     static let maximumResponseBytes = 64 * 1024
 
@@ -76,6 +77,71 @@ public enum RemoteUsage {
             observedAt: snapshot.observedAt,
             resetCredits: resetCredits
         )
+    }
+
+    public static func redeemZaiReset(credential: String, recordID: String, requestID: String) async throws -> Redemption {
+        try await redeemZaiReset(
+            credential: credential,
+            recordID: recordID,
+            requestID: requestID,
+            transport: defaultTransport(),
+            observedAt: nil
+        )
+    }
+
+    static func redeemZaiReset(
+        credential: String,
+        recordID: String,
+        requestID: String,
+        transport: RemoteUsageTransport,
+        observedAt: Date? = nil
+    ) async throws -> Redemption {
+        guard !credential.isEmpty,
+              recordID.wholeMatch(of: #/^[0-9]+$/#) != nil,
+              let numericRecordID = Int(recordID), numericRecordID > 0,
+              (1 ... 256).contains(requestID.count),
+              requestID.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
+        else { throw QuotaError.notConfigured }
+
+        let inventory = try await readZaiResetInventory(credential: credential, transport: transport)
+        let now = observedAt ?? Date()
+        var selected: (card: ZaiResetCard, resetType: String)?
+        for (cards, resetType) in [(inventory.fiveHourResets, "FIVE_HOUR"), (inventory.weekResets, "WEEK")] {
+            if let card = cards.first(where: {
+                $0.available && $0.recordId == numericRecordID
+                    && ($0.expiry.map { $0 > now } ?? true)
+                    && !($0.grantType?.isEmpty ?? true)
+            }) {
+                selected = (card, resetType)
+                break
+            }
+        }
+        guard let selected, let grantType = selected.card.grantType else { return .noCredit }
+
+        var request = URLRequest(url: zaiUseResetURL)
+        request.httpMethod = "POST"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.httpShouldHandleCookies = false
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "grantType": grantType,
+                "recordId": numericRecordID,
+                "requestId": requestID,
+                "resetType": selected.resetType,
+                "targetType": "PERSONAL",
+            ], options: [.sortedKeys])
+        } catch {
+            throw QuotaError.invalidResponse
+        }
+        let body = try await RemoteUsage.execute(request, transport: transport)
+        guard let response = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              response["success"] as? Bool == true
+        else { throw QuotaError.invalidResponse }
+        return .reset
     }
 
     /// Reads a compiled, first-party HTTPS endpoint using the shared quota security boundary.
@@ -177,18 +243,11 @@ public enum RemoteUsage {
         credential: String,
         transport: RemoteUsageTransport
     ) async throws -> ZaiResetData? {
-        // Read-only inventory used by the subscription dashboard. Never redeem a card here.
+        // The read path only reads. `redeemZaiReset` uses a card only after the user confirms.
         // https://github.com/LogicIncZo/zai-usage/blob/main/zai-usage.ts
         // https://github.com/yetone/magpie/blob/main/internal/provider/zhipu_resets_test.go
         do {
-            let body = try await fetch(
-                endpoint: zaiResetURL,
-                credential: credential,
-                transport: transport
-            )
-            let envelope = try JSONDecoder().decode(ZaiResetEnvelope.self, from: body)
-            guard envelope.code == 200, envelope.success else { return nil }
-            return envelope.data
+            return try await readZaiResetInventory(credential: credential, transport: transport)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -196,28 +255,49 @@ public enum RemoteUsage {
         }
     }
 
-    private static func zaiResetCredits(_ inventory: ZaiResetData, observedAt: Date) -> ResetCredits {
-        var availableCount = 0
-        var nextExpiry: Date?
-        for reset in [inventory.fiveHourResets, inventory.weekResets].lazy.joined() where reset.available {
-            guard let expiry = reset.expiry else {
-                availableCount += 1
-                continue
-            }
-            guard expiry > observedAt else { continue }
-            availableCount += 1
-            if let current = nextExpiry {
-                nextExpiry = min(current, expiry)
-            } else {
-                nextExpiry = expiry
-            }
+    private static func readZaiResetInventory(
+        credential: String,
+        transport: RemoteUsageTransport
+    ) async throws -> ZaiResetData {
+        let body = try await fetch(endpoint: zaiResetURL, credential: credential, transport: transport)
+        let envelope: ZaiResetEnvelope
+        do {
+            envelope = try JSONDecoder().decode(ZaiResetEnvelope.self, from: body)
+        } catch {
+            throw QuotaError.invalidResponse
         }
-        return ResetCredits(
-            availableCount: availableCount,
-            nextID: nil,
-            nextTitle: nil,
-            nextExpiry: nextExpiry
-        )
+        guard envelope.code == 200, envelope.success, let data = envelope.data else {
+            throw QuotaError.invalidResponse
+        }
+        return data
+    }
+
+    private static func zaiResetCredits(_ inventory: ZaiResetData, observedAt: Date) -> ResetCredits {
+        let fiveHour = inventory.fiveHourResets.filter {
+            $0.available && ($0.expiry.map { $0 > observedAt } ?? true)
+        }
+        let week = inventory.weekResets.filter {
+            $0.available && ($0.expiry.map { $0 > observedAt } ?? true)
+        }
+        let options = [
+            ResetOption.group(
+                fiveHour.compactMap { card in
+                    guard let id = card.recordId, !(card.grantType?.isEmpty ?? true) else { return nil }
+                    return (String(id), 1, card.expiry)
+                },
+                title: "5-hour reset card",
+                detail: "Refills your 5-hour limit."
+            ),
+            ResetOption.group(
+                week.compactMap { card in
+                    guard let id = card.recordId, !(card.grantType?.isEmpty ?? true) else { return nil }
+                    return (String(id), 1, card.expiry)
+                },
+                title: "Weekly reset card",
+                detail: "Refills your weekly limit."
+            ),
+        ].compactMap { $0 }
+        return ResetCredits(availableCount: fiveHour.count + week.count, options: options)
     }
 
     private static func decodeZai(_ body: Data, observedAt: Date) throws -> QuotaSnapshot {
@@ -430,14 +510,19 @@ private struct ZaiResetData: Decodable {
 private struct ZaiResetCard: Decodable {
     let available: Bool
     let expiry: Date?
+    let recordId: Int?
+    let grantType: String?
 
     private enum CodingKeys: String, CodingKey {
-        case available, expireTime
+        case available, expireTime, recordId, grantType
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         available = try container.decode(Bool.self, forKey: .available)
+        // Only redemption needs these fields, so a value of another type must not hide the card count.
+        recordId = (try? container.decodeIfPresent(Int.self, forKey: .recordId)) ?? nil
+        grantType = (try? container.decodeIfPresent(String.self, forKey: .grantType)) ?? nil
         let expireTime = try container.decodeIfPresent(String.self, forKey: .expireTime)
         guard available, let expireTime else {
             expiry = nil

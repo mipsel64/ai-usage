@@ -151,12 +151,7 @@ struct RemoteUsageTests {
             transport: transport
         )
 
-        #expect(snapshot.resetCredits == ResetCredits(
-            availableCount: 0,
-            nextID: nil,
-            nextTitle: nil,
-            nextExpiry: nil
-        ))
+        #expect(snapshot.resetCredits == ResetCredits(availableCount: 0))
     }
 
     @Test func zaiReadsAvailableResetCountAndNearestExpiry() async throws {
@@ -168,9 +163,9 @@ struct RemoteUsageTests {
                         {"available":false,"expireTime":"2026-11-01 23:59:59"}
                     ],
                     "weekResets":[
-                        {"available":true,"expireTime":"2027-12-22 23:59:59"},
-                        {"available":true,"expireTime":"2027-12-23 23:59:59"},
-                        {"available":true,"expireTime":"2027-12-22 23:59:59"}
+                        {"available":true,"expireTime":"2027-12-22 23:59:59","recordId":11,"grantType":"gift"},
+                        {"available":true,"expireTime":"2027-12-23 23:59:59","recordId":12,"grantType":"gift"},
+                        {"available":true,"expireTime":"2027-12-22 23:59:59","recordId":13,"grantType":"gift"}
                     ]
                 }}
             """#.utf8)
@@ -185,9 +180,13 @@ struct RemoteUsageTests {
         #expect(snapshot.windows.map(\.id) == ["zai-5h"])
         #expect(snapshot.resetCredits == ResetCredits(
             availableCount: 3,
-            nextID: nil,
-            nextTitle: nil,
-            nextExpiry: Date(timeIntervalSince1970: 1_829_491_199)
+            options: [ResetOption(
+                id: "11",
+                title: "Weekly reset card",
+                detail: "Refills your weekly limit.",
+                count: 3,
+                expiry: Date(timeIntervalSince1970: 1_829_491_199)
+            )]
         ))
         let requests = await transport.requests
         #expect(requests.count == 2)
@@ -215,12 +214,7 @@ struct RemoteUsageTests {
         )
 
         #expect(snapshot.windows.map(\.id) == ["zai-5h"])
-        #expect(snapshot.resetCredits == ResetCredits(
-            availableCount: 0,
-            nextID: nil,
-            nextTitle: nil,
-            nextExpiry: nil
-        ))
+        #expect(snapshot.resetCredits == ResetCredits(availableCount: 0))
     }
 
     @Test func zaiExcludesExpiredResetsAndCountsMissingExpiry() async throws {
@@ -246,12 +240,123 @@ struct RemoteUsageTests {
             observedAt: observedAt
         )
 
-        #expect(snapshot.resetCredits == ResetCredits(
-            availableCount: 2,
-            nextID: nil,
-            nextTitle: nil,
-            nextExpiry: Date(timeIntervalSince1970: 1_801_497_599)
-        ))
+        #expect(snapshot.resetCredits == ResetCredits(availableCount: 2))
+    }
+
+    @Test func zaiCountsCardsWithoutRedeemableFieldsButOmitsTheirOptions() async throws {
+        let transport = MockRemoteUsageTransport(
+            body: Self.zaiQuotaBody,
+            resetBody: Data(#"""
+                {"code":200,"success":true,"data":{
+                    "fiveHourResets":[
+                        {"available":true,"expireTime":"2027-02-01 00:00:00"},
+                        {"available":true,"expireTime":"2027-02-01 00:00:00","recordId":7,"grantType":""},
+                        {"available":true,"expireTime":"2027-02-01 00:00:00","recordId":"9","grantType":"gift"},
+                        {"available":true,"expireTime":"2027-02-01 00:00:00","recordId":10,"grantType":4},
+                        {"available":true,"expireTime":"2027-02-01 00:00:00","recordId":8,"grantType":"gift"}
+                    ],
+                    "weekResets":[]
+                }}
+            """#.utf8)
+        )
+        let snapshot = try await RemoteUsage.fetch(
+            provider: .zai,
+            credential: "test-key",
+            transport: transport,
+            observedAt: observedAt
+        )
+
+        #expect(snapshot.resetCredits?.availableCount == 5)
+        #expect(snapshot.resetCredits?.options == [ResetOption(
+            id: "8",
+            title: "5-hour reset card",
+            detail: "Refills your 5-hour limit.",
+            count: 1,
+            expiry: Date(timeIntervalSince1970: 1_801_411_200)
+        )])
+    }
+
+    @Test func zaiRedeemReadsListThenPostsExactRequest() async throws {
+        let transport = QueuedRemoteUsageTransport(responses: [
+            .success(.init(statusCode: 200, body: Data(#"{"code":200,"success":true,"data":{"fiveHourResets":[{"available":true,"expireTime":"2027-01-16 00:00:00","recordId":42,"grantType":"gift"}],"weekResets":[]}}"#.utf8))),
+            .success(.init(statusCode: 200, body: Data(#"{"success":true}"#.utf8))),
+        ])
+
+        let outcome = try await RemoteUsage.redeemZaiReset(
+            credential: "test-key",
+            recordID: "42",
+            requestID: "request-1",
+            transport: transport,
+            observedAt: observedAt
+        )
+
+        #expect(redemptionName(outcome) == "reset")
+        let requests = await transport.requests
+        #expect(requests.count == 2)
+        #expect(requests[0].url?.absoluteString == "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL")
+        #expect(requests[0].httpMethod == "GET")
+        #expect(requests[1].url?.absoluteString == "https://api.z.ai/api/biz/customer-package-reset/use")
+        #expect(requests[1].httpMethod == "POST")
+        #expect(requests[1].value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        #expect(requests[1].value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(requests[1].value(forHTTPHeaderField: "Accept") == "application/json")
+        #expect(!requests[1].httpShouldHandleCookies)
+        #expect(requests[1].httpBody.map { String(decoding: $0, as: UTF8.self) } == #"{"grantType":"gift","recordId":42,"requestId":"request-1","resetType":"FIVE_HOUR","targetType":"PERSONAL"}"#)
+    }
+
+    @Test(arguments: [
+        #"{"available":true,"expireTime":"2027-01-16 00:00:00","recordId":43,"grantType":"gift"}"#,
+        #"{"available":true,"expireTime":"2027-01-14 00:00:00","recordId":42,"grantType":"gift"}"#,
+        #"{"available":false,"recordId":42,"grantType":"gift"}"#,
+    ])
+    func zaiRedeemRefusesUnavailableCardWithoutPost(card: String) async throws {
+        let body = #"{"code":200,"success":true,"data":{"fiveHourResets":["# + card + #"],"weekResets":[]}}"#
+        let transport = QueuedRemoteUsageTransport(responses: [
+            .success(.init(statusCode: 200, body: Data(body.utf8))),
+        ])
+
+        let outcome = try await RemoteUsage.redeemZaiReset(
+            credential: "test-key",
+            recordID: "42",
+            requestID: "request-1",
+            transport: transport,
+            observedAt: observedAt
+        )
+
+        #expect(redemptionName(outcome) == "noCredit")
+        #expect(await transport.requests.count == 1)
+    }
+
+    @Test func zaiRedeemRejectsUnconfirmedResponse() async {
+        let transport = QueuedRemoteUsageTransport(responses: [
+            .success(.init(statusCode: 200, body: Data(#"{"code":200,"success":true,"data":{"fiveHourResets":[{"available":true,"recordId":42,"grantType":"gift"}],"weekResets":[]}}"#.utf8))),
+            .success(.init(statusCode: 200, body: Data(#"{"success":false}"#.utf8))),
+        ])
+
+        await #expect(throws: QuotaError.invalidResponse) {
+            _ = try await RemoteUsage.redeemZaiReset(
+                credential: "test-key",
+                recordID: "42",
+                requestID: "request-1",
+                transport: transport,
+                observedAt: observedAt
+            )
+        }
+    }
+
+    @Test(arguments: ["", "abc", "-1", "0", "1.0", "１２"])
+    func zaiRedeemRejectsInvalidRecordIDBeforeRequests(recordID: String) async {
+        let transport = QueuedRemoteUsageTransport(responses: [])
+
+        await #expect(throws: QuotaError.notConfigured) {
+            _ = try await RemoteUsage.redeemZaiReset(
+                credential: "test-key",
+                recordID: recordID,
+                requestID: "request-1",
+                transport: transport
+            )
+        }
+        #expect(await transport.requests.isEmpty)
     }
 
     @Test func zaiResetReadIsBestEffort() async throws {
@@ -658,6 +763,16 @@ struct RemoteUsageTests {
         )
     }
 
+    private func redemptionName(_ redemption: Redemption) -> String {
+        switch redemption {
+        case .reset: "reset"
+        case .alreadyRedeemed: "alreadyRedeemed"
+        case .nothingToReset: "nothingToReset"
+        case .noCredit: "noCredit"
+        case .tryLater: "tryLater"
+        }
+    }
+
     private func fetch(
         _ provider: ProviderID,
         body: String,
@@ -743,6 +858,22 @@ private actor MockRemoteUsageTransport: RemoteUsageTransport {
         }
         quotaReturnedAt = Date()
         return try result.get()
+    }
+}
+
+private actor QueuedRemoteUsageTransport: RemoteUsageTransport {
+    typealias Result = Swift.Result<RemoteUsageTransportResponse, Error>
+    private var responses: [Result]
+    private(set) var requests: [URLRequest] = []
+
+    init(responses: [Result]) {
+        self.responses = responses
+    }
+
+    func response(for request: URLRequest) async throws -> RemoteUsageTransportResponse {
+        requests.append(request)
+        guard !responses.isEmpty else { throw QuotaError.unavailable }
+        return try responses.removeFirst().get()
     }
 }
 

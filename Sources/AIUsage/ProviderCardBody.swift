@@ -5,8 +5,6 @@ struct ProviderCardBody: View {
     let provider: QuotaProvider
     let state: ProviderState?
     let now: Date
-    let resetResult: String?
-    let resetError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -30,19 +28,6 @@ struct ProviderCardBody: View {
                         }
                     }
                 }
-            }
-
-            if let resetResult, !resetResult.isEmpty {
-                Text(resetResult)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let resetError, !resetError.isEmpty {
-                Label(resetError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

@@ -248,17 +248,19 @@ final class UsageStore {
         }
     }
 
-    func redeemableCredit(_ id: ProviderID, at now: Date) -> ResetCredits? {
-        guard let state = states[id], state.connected, !state.loading, state.message == nil,
-              let snapshot = state.snapshot, (0..<150).contains(now.timeIntervalSince(snapshot.observedAt)),
-              let credits = snapshot.resetCredits, credits.availableCount > 0, credits.nextID != nil,
-              credits.nextExpiry.map({ $0 > now }) ?? true else { return nil }
-        return credits
+    func usableResets(_ id: ProviderID, at now: Date) -> [ResetOption] {
+        guard let provider = providers.first(where: { $0.id == id }), case .banked = provider.reset,
+              let state = states[id], state.connected, !state.loading, state.message == nil,
+              let snapshot = state.snapshot,
+              (0..<(provider.refreshInterval + 90)).contains(now.timeIntervalSince(snapshot.observedAt)) else { return [] }
+        return snapshot.resetCredits?.options.filter {
+            $0.count > 0 && ($0.expiry.map { $0 > now } ?? true)
+        } ?? []
     }
 
     func redeemReset(_ id: ProviderID, creditID: String) async throws -> String {
         guard let provider = providers.first(where: { $0.id == id }), case let .banked(_, redeem) = provider.reset,
-              redeemableCredit(id, at: .now)?.nextID == creditID else {
+              usableResets(id, at: .now).contains(where: { $0.id == creditID }) else {
             throw ActionError("Refresh the quota and check that this reset is still available.")
         }
         redeeming.insert(id)
@@ -284,6 +286,7 @@ final class UsageStore {
         case .alreadyRedeemed: return "This reset was already redeemed."
         case .nothingToReset: return "The provider reports that no quota needs a reset."
         case .noCredit: return "The provider reports that no reset credit is available."
+        case .tryLater: return "The provider asks you to wait before you use another reset. Nothing was used."
         }
     }
 

@@ -48,10 +48,16 @@ struct CodexUsageTests {
         #expect(snapshot.windows[0].resetAt == Date(timeIntervalSince1970: 2_000))
         #expect(snapshot.windows[1].resetAt == nil)
         #expect(snapshot.windows[2].resetAt == nil)
-        #expect(snapshot.resetCredits?.availableCount == 4)
-        #expect(snapshot.resetCredits?.nextID == "next")
-        #expect(snapshot.resetCredits?.nextTitle == "Full reset")
-        #expect(snapshot.resetCredits?.nextExpiry == Date(timeIntervalSince1970: 3_000))
+        #expect(snapshot.resetCredits == ResetCredits(
+            availableCount: 4,
+            options: [ResetOption(
+                id: "next",
+                title: "Full reset",
+                detail: nil,
+                count: 1,
+                expiry: Date(timeIntervalSince1970: 3_000)
+            )]
+        ))
         #expect(session.didClose)
     }
 
@@ -346,6 +352,7 @@ struct CodexUsageTests {
         case .alreadyRedeemed: "alreadyRedeemed"
         case .nothingToReset: "nothingToReset"
         case .noCredit: "noCredit"
+        case .tryLater: "tryLater"
         }
     }
 

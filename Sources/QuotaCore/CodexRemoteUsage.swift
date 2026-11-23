@@ -150,7 +150,7 @@ public enum CodexRemoteUsage {
         if let inventory {
             resetCredits = try inventory.eligible(observedAt: observedAt).summary
         } else if let reported = payload.rateLimitResetCredits?.availableCount {
-            resetCredits = ResetCredits(availableCount: reported, nextID: nil, nextTitle: nil, nextExpiry: nil)
+            resetCredits = ResetCredits(availableCount: reported)
         } else {
             resetCredits = nil
         }
@@ -259,17 +259,15 @@ private struct CodexResetInventory: Decodable {
             guard let date = Self.parseDate(expiry) else { throw QuotaError.invalidResponse }
             return date > observedAt
         }
-        let next = eligible.first
+        let options = codexResetOptions(try eligible.map { credit in
+            let expiry = try credit.expiresAt.map { value -> Date in
+                guard let date = Self.parseDate(value) else { throw QuotaError.invalidResponse }
+                return date
+            }
+            return (credit.id, credit.title, expiry)
+        })
         return (
-            ResetCredits(
-                availableCount: availableCount,
-                nextID: next?.id,
-                nextTitle: next?.title,
-                nextExpiry: try next?.expiresAt.map { value in
-                    guard let date = Self.parseDate(value) else { throw QuotaError.invalidResponse }
-                    return date
-                }
-            ),
+            ResetCredits(availableCount: availableCount, options: options),
             Set(eligible.map(\.id))
         )
     }
